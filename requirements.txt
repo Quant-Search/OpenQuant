@@ -1,0 +1,9 @@
+pandas
+numpy
+pyyaml
+python-dotenv
+pytest
+# Optional extras used by the project; install as needed
+yfinance
+ccxt
+matplotlib

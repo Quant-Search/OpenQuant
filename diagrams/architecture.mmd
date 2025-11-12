@@ -1,0 +1,4 @@
+%% Mermaid diagram for the research/trading flow
+flowchart TD
+  A[Universe] --> B[Data Ingest]\nB --> C[Feature Engineering]\nC --> D{Strategy Generators}\nD --> E[Backtest Engine]\nE --> F[Walk-Forward / Purged CV]\nF --> G[Overfitting Checks]\nG --> H{Selection & Ensembling}\nH --> I[Paper/Live Execution]\nI --> J[Risk Manager]\nJ --> K[Monitoring/Reporting]\nK --> L[Feedback Loop]\nL --> C
+

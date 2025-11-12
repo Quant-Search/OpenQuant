@@ -1,0 +1,232 @@
+from __future__ import annotations
+"""MetaTrader5 bridge for demo/live integration (guarded import).
+
+- Tries to initialize MT5 if installed
+- Can login if credentials provided
+- Provides helpers to map symbols, compute volumes and send market orders
+
+NOTE: UI chart attachment requires an EA; this bridge focuses on trading sync.
+"""
+from typing import Any, Optional, Dict, List, Tuple
+from pathlib import Path
+import json
+import time
+
+_MT5 = None
+
+
+def _lazy_import() -> Optional[Any]:
+    global _MT5
+    if _MT5 is not None:
+        return _MT5
+    try:
+        import MetaTrader5 as mt5  # type: ignore
+        _MT5 = mt5
+        return _MT5
+    except Exception:
+        _MT5 = None
+        return None
+
+
+def is_available() -> bool:
+    return _lazy_import() is not None
+
+
+def init(login: Optional[int] = None, server: Optional[str] = None, password: Optional[str] = None, *, terminal_path: Optional[str] = None) -> bool:
+    mt5 = _lazy_import()
+    if not mt5:
+        return False
+    try:
+        # If already initialized and connected, reuse the session
+        try:
+            acc = mt5.account_info()
+            if acc is not None:
+                if login and int(getattr(acc, "login", 0) or 0) != int(login):
+                    # Logged in to a different account -> try switching
+                    if not (password and server):
+                        return False
+                    if not mt5.login(login, password=password, server=server):  # type: ignore[arg-type]
+                        return False
+                return True
+        except Exception:
+            pass
+
+        # Not connected: Try initialize (optionally pass path for portable installs)
+        ok = False
+        last_err = None
+        if terminal_path:
+            try:
+                Path(terminal_path).parent.mkdir(parents=True, exist_ok=True)
+            except Exception:
+                pass
+            ok = mt5.initialize(path=terminal_path)  # type: ignore[arg-type]
+            if not ok and hasattr(mt5, "last_error"):
+                try:
+                    last_err = mt5.last_error()
+                except Exception:
+                    last_err = None
+        if not ok:
+            ok = mt5.initialize()  # type: ignore[arg-type]
+            if not ok and hasattr(mt5, "last_error") and last_err is None:
+                try:
+                    last_err = mt5.last_error()
+                except Exception:
+                    last_err = None
+        if not ok:
+            return False
+        # Optional login
+        if login and password and server:
+            ok2 = mt5.login(login, password=password, server=server)  # type: ignore[arg-type]
+            if not ok2:
+                return False
+        return True
+    except Exception:
+        return False
+
+
+def shutdown() -> None:
+    mt5 = _lazy_import()
+    if not mt5:
+        return
+    try:
+        mt5.shutdown()
+    except Exception:
+        pass
+
+
+def _load_symbol_map(path: str | Path = "data/mt5_symbol_map.json") -> Dict[str, str]:
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return {str(k): str(v) for k, v in json.load(f).items()}
+    except Exception:
+        return {}
+
+
+def map_symbol(binance_symbol: str, *, symmap: Optional[Dict[str, str]] = None) -> str:
+    """Best-effort mapping like BTC/USDT -> BTCUSD.
+    Allow override via data/mt5_symbol_map.json.
+    """
+    sm = symmap or _load_symbol_map()
+    if binance_symbol in sm:
+        return sm[binance_symbol]
+    s = binance_symbol.upper()
+    if s.endswith("/USDT"):
+        s = s.replace("/USDT", "USD")
+    return s.replace("/", "")
+
+
+def _round_step(x: float, step: float) -> float:
+    if step <= 0:
+        return x
+    n = round(x / step)
+    return max(n * step, step)
+
+
+def _ensure_symbol(mt5, sym: str) -> bool:  # type: ignore[no-untyped-def]
+    info = mt5.symbol_info(sym)
+    if info is None:
+        mt5.symbol_select(sym, True)
+        info = mt5.symbol_info(sym)
+    return info is not None
+
+
+def positions_by_symbol(mt5) -> Dict[str, float]:  # type: ignore[no-untyped-def]
+    out: Dict[str, float] = {}
+    try:
+        poss = mt5.positions_get()
+        if poss is None:
+            return {}
+        for p in poss:
+            vol = float(p.volume)
+            sym = str(p.symbol)
+            # netting assumption
+            out[sym] = out.get(sym, 0.0) + (vol if int(p.type) == 0 else -vol)
+        return out
+    except Exception:
+        return {}
+
+
+def account_equity(mt5) -> float:  # type: ignore[no-untyped-def]
+    try:
+        info = mt5.account_info()
+        return float(info.equity) if info else 0.0
+    except Exception:
+        return 0.0
+
+
+def apply_allocation_to_mt5(
+    allocation: List[Dict[str, object]],
+    *,
+    volume_min_floor: float = 0.01,
+    price_cache: Optional[Dict[str, float]] = None,
+    terminal_path: Optional[str] = None,
+    login: Optional[int] = None,
+    password: Optional[str] = None,
+    server: Optional[str] = None,
+) -> Dict[str, float]:
+    """Mirror allocation weights into MT5 as approximate net positions.
+
+    We compute volume lots so that notional ≈ weight * equity using contract_size and price.
+    Returns dict with {symbol: target_volume_lots} for visibility.
+    """
+    mt5 = _lazy_import()
+    if not mt5:
+        raise RuntimeError("MetaTrader5 module not available")
+    if not init(login=login, password=password, server=server, terminal_path=terminal_path):
+        raise RuntimeError("Failed to initialize/login to MT5")
+
+    eq = max(1e-6, account_equity(mt5))
+    symmap = _load_symbol_map()
+    targets: Dict[str, float] = {}
+
+    for entry in allocation:
+        sym_b = str(entry.get("symbol", ""))
+        w = float(entry.get("weight", 0.0))
+        if w <= 0.0 or not sym_b:
+            continue
+        sym_mt5 = map_symbol(sym_b, symmap=symmap)
+        if not _ensure_symbol(mt5, sym_mt5):
+            continue
+        info = mt5.symbol_info(sym_mt5)
+        if info is None:
+            continue
+        tick = mt5.symbol_info_tick(sym_mt5)
+        price = float(getattr(tick, "last", 0.0) or getattr(tick, "bid", 0.0) or getattr(tick, "ask", 0.0) or 0.0)
+        if price <= 0.0:
+            continue
+        contract = float(getattr(info, "trade_contract_size", 1.0) or 1.0)
+        vmin = float(getattr(info, "volume_min", volume_min_floor) or volume_min_floor)
+        vstep = float(getattr(info, "volume_step", volume_min_floor) or volume_min_floor)
+        vmax = float(getattr(info, "volume_max", 100.0) or 100.0)
+        target_notional = w * eq
+        vol = target_notional / max(1e-9, (contract * price))
+        vol = min(max(_round_step(vol, vstep), vmin), vmax)
+        targets[sym_mt5] = vol
+
+    # Compute current -> target deltas and send market orders
+    current = positions_by_symbol(mt5)
+    for sym, tgt in targets.items():
+        cur = current.get(sym, 0.0)
+        delta = tgt - cur
+        if abs(delta) < 1e-9:
+            continue
+        req = {
+            "action": mt5.TRADE_ACTION_DEAL,
+            "symbol": sym,
+            "volume": abs(delta),
+            "type": mt5.ORDER_TYPE_BUY if delta > 0 else mt5.ORDER_TYPE_SELL,
+            "deviation": 20,
+            "magic": 987654321,
+            "comment": "OpenQuant",
+        }
+        # Request price at send time
+        tick = mt5.symbol_info_tick(sym)
+        if tick:
+            px = float(getattr(tick, "ask", 0.0) if delta > 0 else getattr(tick, "bid", 0.0))
+            if px > 0:
+                req["price"] = px
+        mt5.order_send(req)
+        time.sleep(0.1)
+
+    return targets
+

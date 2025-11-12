@@ -1,0 +1,13 @@
+flowchart TD
+    A[GUI: Run Button] --> B{Mode}
+    B -- MT5 FX --> C[Discover FX symbols via MT5]
+    C --> D[Fetch OHLCV from MT5]
+    D --> E[Backtest + Optimization + WFO]
+    E --> F[Persist results to DuckDB]
+    F --> G[Allocate under exposure caps]
+    G --> H[Paper simulator + Ledger in DuckDB]
+    H --> I[Apply allocation to MT5 (market orders)]
+    I --> J[Positions visible in MT5]
+    B -- Other --> C2[Discover via exchange API]
+    C2 --> D2[Fetch OHLCV via CCXT]
+    D2 --> E

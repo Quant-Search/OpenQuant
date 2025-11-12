@@ -1,0 +1,13 @@
+flowchart TD
+    S[Start] --> R1[Run Universe Research]
+    R1 --> G{Guardrails OK?}
+    G -- yes --> CL[Concentration Limits (per symbol / per (symbol,strategy))]
+    G -- no --> W[Warn + Mark not OK]
+    W --> CL
+    CL --> P[Persist Results + Refresh best_configs]
+    P --> D[Dashboard (auto-open once)]
+    D --> C{Scheduler? --repeat-mins>0}
+    C -- yes --> L[Sleep N minutes]
+    L --> R1
+    C -- no --> E[End]
+

@@ -1,0 +1,29 @@
+# Example config for Binance (ccxt) with BTC/USDT
+name: binance_btc_sma
+
+data:
+  source: ccxt:binance
+  symbol: BTC/USDT
+  timeframe: 1h
+  # Optional date bounds; DataLoader will normalize strings for ccxt
+  start: 2021-01-01
+
+strategy:
+  fast: [10, 20]
+  slow: [50, 100]
+
+backtest:
+  fee_bps: 2.0             # approximate taker fee in bps
+  initial_capital: 100000.0
+  position_weight: 0.5
+  max_leverage: 1.0
+  max_weight: 1.0
+
+constraints:
+  max_drawdown: 0.5
+  cvar_alpha: 0.95
+  max_cvar: 0.5
+
+report:
+  out_dir: reports
+
