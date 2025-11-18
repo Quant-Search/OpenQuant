@@ -1,4 +1,11 @@
 ## [Unreleased]
+- MT5 alerts: Added execution anomaly detection (rejected orders, high slippage) to mt5_bridge with alerting via openquant.utils.alerts
+- Risk Management: Added SL/TP support to MT5 bridge (apply_allocation_to_mt5 now accepts sl/tp in allocation entries)
+- Risk Management: Added modify_position() to mt5_bridge for updating SL/TP on existing positions
+- Trailing Stop: Implemented TrailingStopManager in openquant/risk/trailing_stop.py with configurable trailing distance/activation
+- Runner: Added scripts/run_trailing_stop.py for continuous monitoring and SL updates
+- Tests: Added tests/test_mt5_bridge_alerts.py and tests/test_mt5_bridge_risk.py and tests/test_trailing_stop.py (13 tests total, all passing)
+
 - MT5 FX mode: universe runner now supports `exchange="mt5"` with direct OHLCV from MetaTrader5 and FX symbol discovery (majors, metals)
 - Data source: added openquant/data/mt5_source.py with `fetch_ohlcv()` and `discover_fx_symbols()`; cached under source key `mt5`
 - Dashboard: added "Use MT5 FX mode" toggle and MT5 settings now default from env (OQ_MT5_TERMINAL, OQ_MT5_SERVER, OQ_MT5_LOGIN, OQ_MT5_PASSWORD)

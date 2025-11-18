@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=OpenQuant Robot
+Exec=OpenQuantRobot
+Icon=openquant
+Categories=Finance;
+Terminal=false

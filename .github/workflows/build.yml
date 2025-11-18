@@ -1,0 +1,94 @@
+name: Build OpenQuant Robot
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+        cache: 'pip'
+        
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        
+    - name: Build Executable
+      run: |
+        python scripts/build_app.py
+        
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: OpenQuantRobot-Windows
+        path: dist/OpenQuantRobot/OpenQuantRobot.exe
+
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+        cache: 'pip'
+        
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        
+    - name: Build Executable
+      run: |
+        python scripts/build_app.py
+        
+    - name: Create AppImage
+      run: |
+        # Install appimagetool
+        wget -q https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+        chmod +x appimagetool-x86_64.AppImage
+        
+        # Prepare AppDir
+        mkdir -p AppDir
+        cp -r dist/OpenQuantRobot/* AppDir/
+        
+        # Create metadata
+        echo '[Desktop Entry]
+        Type=Application
+        Name=OpenQuant Robot
+        Exec=OpenQuantRobot
+        Icon=openquant
+        Categories=Finance;
+        Terminal=false' > AppDir/OpenQuant.desktop
+        
+        # Create dummy icon (or use a real one if available)
+        touch AppDir/openquant.png
+        
+        # Create AppRun symlink
+        ln -s OpenQuantRobot AppDir/AppRun
+        
+        # Build AppImage
+        ARCH=x86_64 ./appimagetool-x86_64.AppImage --no-appstream AppDir OpenQuantRobot-x86_64.AppImage
+        
+    - name: Verify AppImage
+      run: |
+        sudo apt-get update && sudo apt-get install -y fuse libfuse2
+        python tests/test_appimage_run.py
+        
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: OpenQuantRobot-Linux-AppImage
+        path: OpenQuantRobot-x86_64.AppImage

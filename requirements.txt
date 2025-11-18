@@ -7,3 +7,7 @@ pytest
 yfinance
 ccxt
 matplotlib
+duckdb
+optuna
+streamlit
+pyinstaller
