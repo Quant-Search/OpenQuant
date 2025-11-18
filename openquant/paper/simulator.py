@@ -15,6 +15,7 @@ from .state import PortfolioState, Key
 @dataclass
 class MarketSnapshot:
     prices: Dict[Key, float]  # last trade price per key (quote currency units)
+    next_prices: Dict[Key, float] = field(default_factory=dict)  # next-bar prices for fills (optional)
 
 
 def compute_target_units(state: PortfolioState, targets: List[Tuple[Key, float]], snap: MarketSnapshot) -> Dict[Key, float]:
@@ -60,8 +61,13 @@ def execute_orders(
     *,
     fee_bps: float = 0.0,
     slippage_bps: float = 0.0,
+    next_bar_fill: bool = False,
+    max_fill_fraction: float = 1.0,
+    snap: Optional[MarketSnapshot] = None,
 ) -> Tuple[Dict[str, float], List[Tuple[Key, float, float, float]]]:
     """Execute orders and update state.cash and holdings.
+
+    Supports next-bar fills (use next_prices if available) and partial fills (max_fill_fraction < 1.0).
 
     Returns (summary, fills) where fills are (key, delta_units, exec_price, fee_paid).
     """
@@ -73,28 +79,39 @@ def execute_orders(
         if abs(delta_u) <= 1e-12:
             continue
         side = 1.0 if delta_u > 0 else -1.0
+        # Use next-bar price if enabled and available
+        exec_price = ref_price
+        if next_bar_fill and snap and k in snap.next_prices:
+            exec_price = snap.next_prices[k]
         # execution price includes slippage in direction of trade
-        exec_price = ref_price * (1.0 + side * (slippage_bps / 1e4))
-        notional = abs(delta_u) * exec_price
+        exec_price = exec_price * (1.0 + side * (slippage_bps / 1e4))
+        # Partial fill: fill only up to max_fill_fraction of the order
+        fill_fraction = min(max_fill_fraction, 1.0)
+        filled_delta_u = delta_u * fill_fraction
+        if abs(filled_delta_u) <= 1e-12:
+            continue
+        notional = abs(filled_delta_u) * exec_price
         fee_paid = notional * (fee_bps / 1e4)
         # cash update: buy consumes cash; sell releases cash; fees always reduce cash
         state.cash += (-notional if side > 0 else notional)
         state.cash -= fee_paid
         # update position
         cur_u = state.position(k)
-        state.set_position(k, cur_u + delta_u)
+        state.set_position(k, cur_u + filled_delta_u)
         orders_count += 1
         turnover += notional
-        fills.append((k, delta_u, exec_price, fee_paid))
+        fills.append((k, filled_delta_u, exec_price, fee_paid))
     return {"orders": float(orders_count), "turnover": float(turnover)}, fills
 
 
-def rebalance_to_targets(state: PortfolioState, targets: List[Tuple[Key, float]], snap: MarketSnapshot, *, fee_bps: float = 0.0, slippage_bps: float = 0.0) -> Dict[str, float]:
-    """Rebalance holdings to target weights at snapshot prices (no slippage/fees).
+def rebalance_to_targets(state: PortfolioState, targets: List[Tuple[Key, float]], snap: MarketSnapshot, *, fee_bps: float = 0.0, slippage_bps: float = 0.0, next_bar_fill: bool = False, max_fill_fraction: float = 1.0) -> Dict[str, float]:
+    """Rebalance holdings to target weights at snapshot prices.
+
+    Supports next-bar fills and partial fills.
 
     Returns summary dict with 'orders' (count) and 'turnover' (notional traded).
     """
-    # derive orders and execute them using optional fee/slippage
+    # derive orders and execute them using optional fee/slippage, next-bar, partial fills
     orders = compute_rebalance_orders(state, targets, snap)
-    summary, _fills = execute_orders(state, orders, fee_bps=fee_bps, slippage_bps=slippage_bps)
+    summary, _fills = execute_orders(state, orders, fee_bps=fee_bps, slippage_bps=slippage_bps, next_bar_fill=next_bar_fill, max_fill_fraction=max_fill_fraction, snap=snap)
     return summary

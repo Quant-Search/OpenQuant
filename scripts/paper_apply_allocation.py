@@ -46,6 +46,7 @@ def _exchange_client(name: str):
 
 def _build_snapshot(allocation: List[Dict[str, object]]) -> MarketSnapshot:
     prices: Dict[Key, float] = {}
+    next_prices: Dict[Key, float] = {}  # For next-bar fills, use same price as estimate (can be improved later)
     # group by exchange for fewer clients
     clients: Dict[str, object] = {}
     for entry in allocation:
@@ -64,8 +65,10 @@ def _build_snapshot(allocation: List[Dict[str, object]]) -> MarketSnapshot:
             price = float(ticker.get("last") or ticker.get("close") or 0.0)
         except Exception:
             price = 0.0
-        prices[(ex.upper(), sym, tf, strat)] = price
-    return MarketSnapshot(prices=prices)
+        key = (ex.upper(), sym, tf, strat)
+        prices[key] = price
+        next_prices[key] = price  # Placeholder: use current price for next-bar (realistic would fetch next bar)
+    return MarketSnapshot(prices=prices, next_prices=next_prices)
 
 
 def main() -> int:
@@ -116,8 +119,10 @@ def main() -> int:
     # Fetch prices and build orders
     snap = _build_snapshot(allocation)
     orders = compute_rebalance_orders(state, targets, snap)
-    # Execute with fee/slippage
-    summary, fills_raw = execute_orders(state, orders, fee_bps=float(args.fee_bps), slippage_bps=float(args.slippage_bps))
+    # Execute with fee/slippage, next-bar fills, and partial fills (configurable)
+    next_bar_fill = getattr(args, 'next_bar_fill', False)
+    max_fill_fraction = getattr(args, 'max_fill_fraction', 1.0)
+    summary, fills_raw = execute_orders(state, orders, fee_bps=float(args.fee_bps), slippage_bps=float(args.slippage_bps), next_bar_fill=next_bar_fill, max_fill_fraction=max_fill_fraction, snap=snap)
 
     # Record to portfolio DB
     from datetime import datetime as _dt

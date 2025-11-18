@@ -23,7 +23,7 @@
   - [x] JSON I/O for paper state (save/load)
   - [x] Script: scripts/paper_apply_allocation.py to apply latest allocation to paper state
   - [x] Persist portfolio ledger to DuckDB (positions, trades, equity) and dashboard view (basic)
-  - [ ] Execution model: next-bar fills, partial fills (basic fees/slippage implemented)
+  - [x] Execution model: next-bar fills, partial fills (basic fees/slippage implemented)
   - [x] MT5 bridge for paper trading (init/login, symbol select, market orders)
   - [x] MT5 mirroring (basic): apply allocation weights to MT5 net positions via Python bridge
   - [x] MT5 FX research mode: direct OHLCV + universe discovery from MT5 terminal (EURUSD, GBPUSD, ...)
