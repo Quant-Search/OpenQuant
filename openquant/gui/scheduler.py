@@ -333,6 +333,55 @@ class RobotScheduler:
                 )
             except Exception as e:
                 LOGGER.error(f"MT5 Sync Failed: {e}")
+
+        # 5. Alpaca Execution (if enabled)
+        if cfg.get("use_alpaca"):
+            LOGGER.info("Auto-Pilot: Syncing with Alpaca...")
+            try:
+                from openquant.broker.alpaca_broker import AlpacaBroker
+                broker = AlpacaBroker(
+                    api_key=cfg.get("alpaca_key"), 
+                    secret_key=cfg.get("alpaca_secret"), 
+                    paper=cfg.get("alpaca_paper", True)
+                )
+                
+                # Simple Sync: 
+                # 1. Get current Alpaca positions
+                current_pos = broker.get_positions()
+                
+                # 2. Calculate Target positions from 'alloc'
+                # Alloc is list of dicts: {'symbol': 'BTC/USDT', 'weight': 0.5, ...}
+                # We need to convert weights to quantities based on current equity
+                equity = broker.get_equity()
+                
+                # Group targets by symbol (sum weights if multiple strategies trade same symbol)
+                target_weights = {}
+                for item in alloc:
+                    sym = item.get("symbol")
+                    # Map symbol if needed (e.g. BTC/USDT -> BTCUSD for Alpaca?)
+                    # Alpaca uses "BTC/USD" or "BTCUSD" depending on asset class. 
+                    # For crypto, it's usually "BTC/USD".
+                    # Let's assume symbols are compatible or user maps them.
+                    w = float(item.get("weight", 0.0))
+                    target_weights[sym] = target_weights.get(sym, 0.0) + w
+                
+                # 3. Generate Orders (Diff)
+                # We can use our Rebalancer logic here!
+                # But Rebalancer is generic. Let's do a simple diff loop for now.
+                
+                # Get Prices (we have them in 'snap' or fetch fresh)
+                # We need fresh prices for accurate sizing
+                # Alpaca broker doesn't have get_price(sym) yet, but we can use snapshot prices
+                
+                # For now, let's just log what we WOULD do, to be safe, or implement a basic rebalance
+                LOGGER.info(f"Alpaca Targets: {target_weights}")
+                
+                # TODO: Implement full diff execution here using Broker.place_order
+                # For this iteration, we just connect the broker. 
+                # Full execution logic requires robust symbol mapping and price fetching.
+                
+            except Exception as e:
+                LOGGER.error(f"Alpaca Sync Failed: {e}")
             
         LOGGER.info("Auto-Pilot: Cycle Complete")
 

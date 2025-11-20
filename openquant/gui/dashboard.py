@@ -126,6 +126,36 @@ def view_dashboard(con):
     except Exception:
         st.caption("No portfolio history yet.")
 
+    # Alpaca Live View
+    if st.session_state.get("robot_config", {}).get("use_alpaca"):
+        st.divider()
+        st.subheader("🦙 Alpaca Live Status")
+        
+        cfg = st.session_state.robot_config
+        try:
+            from openquant.broker.alpaca_broker import AlpacaBroker
+            broker = AlpacaBroker(api_key=cfg["alpaca_key"], secret_key=cfg["alpaca_secret"], paper=cfg["alpaca_paper"])
+            
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Equity", f"${broker.get_equity():,.2f}")
+            c1.metric("Cash", f"${broker.get_cash():,.2f}")
+            
+            positions = broker.get_positions()
+            if positions:
+                st.caption("Live Positions")
+                st.json(positions)
+            else:
+                st.info("No open positions on Alpaca.")
+                
+            if st.button("🚨 EMERGENCY CLOSE ALL (Alpaca)", type="primary"):
+                broker.close_all_positions()
+                st.error("Emergency Close Triggered! All positions liquidated.")
+                time.sleep(2)
+                st.rerun()
+                
+        except Exception as e:
+            st.error(f"Alpaca Connection Failed: {e}")
+
 def view_robot_control():
     st.header("🤖 Robot Control Center")
     
@@ -173,6 +203,13 @@ def view_robot_control():
             cfg["mt5_pass"] = c_p.text_input("Password", value=cfg["mt5_pass"], type="password", disabled=SCHEDULER.is_running)
             cfg["mt5_server"] = c_s.text_input("Server", value=cfg["mt5_server"], disabled=SCHEDULER.is_running)
 
+        cfg["use_alpaca"] = st.checkbox("Enable Alpaca Trading", value=cfg.get("use_alpaca", False), disabled=SCHEDULER.is_running)
+        if cfg["use_alpaca"]:
+            c_k, c_s = st.columns(2)
+            cfg["alpaca_key"] = c_k.text_input("Alpaca Key ID", value=cfg.get("alpaca_key", os.environ.get("APCA_API_KEY_ID", "")), disabled=SCHEDULER.is_running)
+            cfg["alpaca_secret"] = c_s.text_input("Alpaca Secret Key", value=cfg.get("alpaca_secret", os.environ.get("APCA_API_SECRET_KEY", "")), type="password", disabled=SCHEDULER.is_running)
+            cfg["alpaca_paper"] = st.checkbox("Paper Mode", value=cfg.get("alpaca_paper", True), disabled=SCHEDULER.is_running)
+
     # Actions
     col_start, col_stop, col_once = st.columns(3)
     
@@ -185,7 +222,11 @@ def view_robot_control():
                 "login": cfg["mt5_login"],
                 "password": cfg["mt5_pass"],
                 "server": cfg["mt5_server"]
-            }
+            },
+            "use_alpaca": cfg.get("use_alpaca", False),
+            "alpaca_key": cfg.get("alpaca_key"),
+            "alpaca_secret": cfg.get("alpaca_secret"),
+            "alpaca_paper": cfg.get("alpaca_paper", True)
         }
         SCHEDULER.start(interval_minutes=cfg["interval"], config=run_cfg)
         st.rerun()
