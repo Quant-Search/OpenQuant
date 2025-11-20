@@ -11,3 +11,11 @@ duckdb
 optuna
 streamlit
 pyinstaller
+plotly
+pandas_ta
+psutil
+statsmodels
+arch
+filterpy
+scipy
+hurst

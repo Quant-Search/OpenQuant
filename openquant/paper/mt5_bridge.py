@@ -32,7 +32,33 @@ def is_available() -> bool:
     return _lazy_import() is not None
 
 
+def validate_credentials(login: Optional[int] = None, server: Optional[str] = None, terminal_path: Optional[str] = None) -> Tuple[bool, str]:
+    """Validate MT5 credentials before attempting connection."""
+    if terminal_path:
+        p = Path(terminal_path)
+        if not p.exists():
+            return False, f"Terminal path does not exist: {terminal_path}"
+    
+    if login is not None:
+        try:
+            int(login)
+        except ValueError:
+            return False, f"Login must be an integer, got: {login}"
+            
+    if login and not server:
+        return False, "Server must be provided if login is specified"
+        
+    return True, "OK"
+
+
 def init(login: Optional[int] = None, server: Optional[str] = None, password: Optional[str] = None, *, terminal_path: Optional[str] = None) -> bool:
+    # 1. Validate inputs first
+    is_valid, msg = validate_credentials(login, server, terminal_path)
+    if not is_valid:
+        # We can't log easily here without circular imports or setup, so just return False
+        # Ideally we'd raise or log. For now, let's print to stderr if possible or just fail safe.
+        return False
+
     mt5 = _lazy_import()
     if not mt5:
         return False
@@ -355,4 +381,49 @@ def export_signals_to_csv(allocations: List[Dict[str, Any]], path: str = "data/s
     # Ideally we should have: from ..utils.logging import get_logger; LOGGER = get_logger(__name__)
     # But to minimize diff, let's just print or skip.
     # print(f"Exported {len(allocations)} signals to {path}")
+
+
+def close_all_positions() -> int:
+    """Emergency: Close ALL open positions immediately.
+    Returns number of closed positions.
+    """
+    mt5 = _lazy_import()
+    if not mt5:
+        return 0
+        
+    count = 0
+    try:
+        positions = mt5.positions_get()
+        if not positions:
+            return 0
+            
+        for pos in positions:
+            tick = mt5.symbol_info_tick(pos.symbol)
+            if not tick:
+                continue
+                
+            # Close logic: Send opposite order
+            type_op = mt5.ORDER_TYPE_SELL if pos.type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY
+            price = tick.bid if type_op == mt5.ORDER_TYPE_SELL else tick.ask
+            
+            req = {
+                "action": mt5.TRADE_ACTION_DEAL,
+                "symbol": pos.symbol,
+                "volume": pos.volume,
+                "type": type_op,
+                "position": pos.ticket,
+                "price": price,
+                "deviation": 20,
+                "magic": 987654321,
+                "comment": "Emergency Close",
+            }
+            
+            res = mt5.order_send(req)
+            if res and res.retcode == mt5.TRADE_RETCODE_DONE:
+                count += 1
+                
+    except Exception:
+        pass
+        
+    return count
 

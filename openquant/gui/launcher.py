@@ -77,8 +77,6 @@ def main():
         "streamlit",
         "run",
         str(dashboard_script),
-        "--server.port=8501",
-        "--server.address=localhost",
     ]
     
     sys.exit(st_cli.main())

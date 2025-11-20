@@ -263,6 +263,61 @@ def view_settings():
     with st.expander("View Environment"):
         st.json(dict(os.environ))
 
+def view_charting(con):
+    st.header("📈 Interactive Charting")
+    
+    # Sidebar Controls for Charting
+    with st.sidebar:
+        st.divider()
+        st.subheader("Chart Settings")
+        exchange_name = st.selectbox("Exchange", ["binance", "kraken", "coinbase"], index=0)
+        symbol = st.text_input("Symbol", value="BTC/USDT")
+        timeframe = st.selectbox("Timeframe", ["1m", "5m", "15m", "1h", "4h", "1d"], index=3)
+        limit = st.number_input("Candles", min_value=50, max_value=1000, value=200)
+    
+    if st.button("Load Chart"):
+        with st.spinner(f"Fetching {symbol} from {exchange_name}..."):
+            try:
+                import ccxt
+                from openquant.utils.plotting import create_interactive_chart
+                
+                # 1. Fetch OHLC
+                ex_class = getattr(ccxt, exchange_name)()
+                ohlcv = ex_class.fetch_ohlcv(symbol, timeframe, limit=limit)
+                
+                if not ohlcv:
+                    st.error("No data returned.")
+                    return
+                    
+                df = pd.DataFrame(ohlcv, columns=['timestamp', 'Open', 'High', 'Low', 'Close', 'Volume'])
+                df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+                df.set_index('timestamp', inplace=True)
+                
+                # 2. Fetch Trades from DB
+                trades = []
+                try:
+                    # Query portfolio_trades for this symbol
+                    # We might need to handle symbol format differences (BTC/USDT vs BTCUSDT)
+                    # For now, exact match.
+                    t_df = _query(con, "SELECT ts as timestamp, side, price, delta_units as size FROM portfolio_trades WHERE symbol = ? ORDER BY ts", (symbol,))
+                    if not t_df.empty:
+                        trades = t_df.to_dict('records')
+                        st.success(f"Found {len(trades)} historical trades.")
+                except Exception as e:
+                    st.warning(f"Could not load trades: {e}")
+                
+                # 3. Indicators (Simple MA for demo)
+                indicators = {}
+                indicators["SMA 20"] = df['Close'].rolling(20).mean()
+                indicators["SMA 50"] = df['Close'].rolling(50).mean()
+                
+                # 4. Plot
+                fig = create_interactive_chart(df, symbol=symbol, indicators=indicators, trades=trades)
+                st.plotly_chart(fig, use_container_width=True)
+                
+            except Exception as e:
+                st.error(f"Error loading chart: {e}")
+
 # --- Main App ---
 
 def main():
@@ -271,7 +326,7 @@ def main():
     # Sidebar Navigation
     with st.sidebar:
         st.title("OpenQuant")
-        page = st.radio("Navigation", ["Dashboard", "Robot Control", "Settings"])
+        page = st.radio("Navigation", ["Dashboard", "Charting", "Robot Control", "Settings"])
         st.divider()
         st.caption(f"OS: {sys.platform}")
         st.caption(f"Time: {datetime.now().strftime('%H:%M')}")
@@ -280,6 +335,8 @@ def main():
     
     if page == "Dashboard":
         view_dashboard(con)
+    elif page == "Charting":
+        view_charting(con)
     elif page == "Robot Control":
         view_robot_control()
     elif page == "Settings":

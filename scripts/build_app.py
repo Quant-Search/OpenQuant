@@ -72,6 +72,7 @@ def build():
         "--copy-metadata=duckdb",
         "--copy-metadata=numpy",
         "--copy-metadata=pandas",
+        "--copy-metadata=plotly",
     ]
     
     for imp in hidden_imports:

@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import itertools
 import concurrent.futures as futures
+import pandas as pd
 
 
 from ..utils.logging import get_logger
@@ -55,11 +56,12 @@ def _limit_for(tf: str) -> int:
 def run_universe(
     exchange: str = "binance",
     timeframes: Iterable[str] = ("1d", "4h", "1h"),
-    top_n: int = 30,
-    strategies: Iterable[str] = ("sma","ema"),
+    top_n: int = 100,
+    strategies: Iterable[str] = ("kalman", "hurst", "stat_arb", "liquidity"),
     param_grids: Optional[Dict[str, Dict[str, Iterable[Any]]]] = None,
     fast_list: Iterable[int] = (10, 20),  # fallback for SMA/EMA
     slow_list: Iterable[int] = (50, 100), # fallback for SMA/EMA
+    signal_list: Iterable[int] = (9,),    # fallback for MACD
     fee_bps: float = 2.0,
     weight: float = 1.0,
     out_dir: str | Path = "reports",
@@ -67,7 +69,8 @@ def run_universe(
     fetch_workers: int | None = 4,    # across symbols/timeframes concurrency
     results_db: str | Path | None = "data/results.duckdb",
     optimize: bool = True,
-    optuna_trials: int = 20,
+    optuna_trials: int = 20,  # Reduced from 50 for speed
+    global_trend: str = "neutral", # "bull", "bear", "neutral"
     run_wfo: bool = True,
     # Optional guardrails (all as positive magnitudes):
     dd_limit: float | None = None,
@@ -119,14 +122,14 @@ def run_universe(
     # Strategy-specific parameter grids helpers (defined outside worker)
     def _default_grid_for(name: str) -> Dict[str, Iterable[Any]]:
         n = name.lower()
-        if n in ("sma", "ema"):
-            return {"fast": fast_list, "slow": slow_list}
-        if n == "rsi":
-            return {"length": [14, 21], "threshold": [50.0, 55.0]}
-        if n == "macd":
-            return {"fast": [10, 12], "slow": [20, 26], "signal": [9]}
-        if n == "bollinger":
-            return {"length": [20], "k": [2.0, 2.5]}
+        if n == "kalman":
+            return {"process_noise": [1e-5, 1e-4], "measurement_noise": [1e-3, 1e-2], "threshold": [1.0, 1.5]}
+        if n == "hurst":
+            return {"lookback": [50, 100], "trend_threshold": [0.55], "mr_threshold": [0.45]}
+        if n == "stat_arb":
+            return {"entry_z": [2.0, 2.5], "exit_z": [0.0, 0.5]}
+        if n == "liquidity":
+            return {"vpin_threshold": [0.2, 0.3, 0.4], "lookback": [10, 20]}
         return {}
     def _narrow_grid_around(seed: Dict[str, Any], grid: Dict[str, Iterable[Any]], band_frac: float = 0.25) -> Dict[str, Iterable[Any]]:
         """Return a narrowed grid keeping values near the seed (within +/- band_frac).
@@ -170,11 +173,84 @@ def run_universe(
         if cached is None or not is_fresh(cached, tf):
             try:
                 if is_mt5:
-                    from ..data.mt5_source import fetch_ohlcv as mt5_fetch_ohlcv
-                    df = retry_call(
-                        lambda: mt5_fetch_ohlcv(symbol, timeframe=tf, since=_default_since(tf), limit=_limit_for(tf)),
-                        retries=3, base_delay=0.5
-                    )
+                    try:
+                        from ..data.mt5_source import fetch_ohlcv as mt5_fetch_ohlcv
+                        df = retry_call(
+                            lambda: mt5_fetch_ohlcv(symbol, timeframe=tf, since=_default_since(tf), limit=_limit_for(tf)),
+                            retries=3, base_delay=0.5
+                        )
+                    except (ImportError, RuntimeError):
+                        # Fallback for Linux/No-MT5: Use yfinance as proxy
+                        LOGGER.warning(f"MetaTrader5 module missing or failed. Using yfinance as proxy for {symbol}")
+                        import yfinance as yf
+                        # Map common forex pairs to Yahoo format
+                        yf_sym = symbol
+                        if len(symbol) == 6 and symbol.isalpha():
+                            yf_sym = f"{symbol}=X"
+                        
+                        # Map timeframe to yfinance interval
+                        yf_interval = "1d"
+                        if tf == "1h": yf_interval = "1h"
+                        elif tf == "4h": yf_interval = "1h" # yfinance doesn't support 4h, use 1h and resample? Or just fetch 1h.
+                        # For simplicity, let's use 1h and we might get more bars.
+                        
+                        # Fetch data
+                        # period="2y" for 1d, "3mo" for hourly to stay within limits
+                        period = "2y" if tf=="1d" else "3mo"
+                        
+                        data = yf.download(yf_sym, period=period, interval=yf_interval, progress=False, auto_adjust=False)
+                        if not data.empty:
+                            # Handle MultiIndex columns (yfinance update)
+                            if isinstance(data.columns, pd.MultiIndex):
+                                data.columns = data.columns.get_level_values(0)
+                            
+                            # Format to OpenQuant standard
+                            data = data.reset_index()
+                            LOGGER.info(f"DEBUG: yfinance columns before rename: {data.columns.tolist()}")
+                            
+                            # Ensure columns are capitalized as expected by validate_ohlcv
+                            data.columns = [str(c).capitalize() for c in data.columns]
+                            
+                            # Handle timestamp column
+                            if "Date" in data.columns: data = data.rename(columns={"Date": "timestamp"})
+                            elif "Datetime" in data.columns: data = data.rename(columns={"Datetime": "timestamp"})
+                            elif "Index" in data.columns: data = data.rename(columns={"Index": "timestamp"})
+                            
+                            if "Timestamp" in data.columns: # Capitalized by the list comp above
+                                data = data.rename(columns={"Timestamp": "timestamp"})
+
+                            if "timestamp" in data.columns:
+                                data = data.set_index("timestamp")
+                            else:
+                                LOGGER.warning(f"Could not find timestamp column in {data.columns.tolist()}")
+                            
+                            # Ensure numeric types
+                            cols = ["Open", "High", "Low", "Close", "Volume"]
+                            for c in cols:
+                                if c in data.columns:
+                                    data[c] = data[c].astype(float)
+                            
+                            # Deduplicate and clean
+                            data = data[~data.index.duplicated(keep="last")]
+                            data = data.dropna()
+                            
+                            # Resample if needed (e.g. 1h -> 4h)
+                            if tf == "4h" and yf_interval == "1h":
+                                # Index is already timestamp
+                                agg_dict = {
+                                    "Open": "first",
+                                    "High": "max",
+                                    "Low": "min",
+                                    "Close": "last",
+                                    "Volume": "sum"
+                                }
+                                # Only agg columns that exist
+                                agg_dict = {k: v for k, v in agg_dict.items() if k in data.columns}
+                                data = data.resample("4h").agg(agg_dict).dropna()
+                                
+                            df = data
+                        else:
+                            df = data # empty
                 else:
                     df = retry_call(
                         lambda: fetch_ohlcv(exchange, symbol, timeframe=tf, since=_default_since(tf), limit=_limit_for(tf)),
@@ -289,15 +365,37 @@ def run_universe(
 
                 dd = -float(max_drawdown(res.equity_curve)); dd = abs(dd)
                 r = res.returns.dropna().values
+                cvar_val = 0.0
                 if r.size:
                     import numpy as np
                     losses = -r
                     var = float(np.quantile(losses, 0.95))
                     tail = losses[losses >= var]
-                    cvar_val = float(tail.mean()) if tail.size else var
-                else:
-                    cvar_val = 0.0
+                    cvar_val = float(tail.mean()) if tail.size else 0.0
+                # Get Forex config if applicable
+                from openquant.config.forex import get_spread_bps, get_swap_cost, FOREX_CONFIG
+                
+                # Determine spread and swap
+                spread = get_spread_bps(symbol) if exchange == "mt5" else 0.0
+                swap_l = get_swap_cost(symbol, "long") if exchange == "mt5" else 0.0
+                swap_s = get_swap_cost(symbol, "short") if exchange == "mt5" else 0.0
+                pip_val = FOREX_CONFIG.get(symbol, {}).get("pip_value", 0.0001)
+                
+                # Determine leverage (default 1.0 for crypto, 50.0 for forex/mt5)
+                lev = 50.0 if exchange == "mt5" else 1.0
 
+                res = backtest_signals(
+                    df, sig, 
+                    fee_bps=fee_bps, 
+                    weight=1.0, 
+                    stop_loss_atr=params.get("stop_loss_atr"),
+                    take_profit_atr=params.get("take_profit_atr"),
+                    spread_bps=spread,
+                    leverage=lev,
+                    swap_long=swap_l,
+                    swap_short=swap_s,
+                    pip_value=pip_val
+                )
                 ok_guard, reasons = apply_guardrails(
                     max_drawdown=dd,
                     cvar=cvar_val,
@@ -327,6 +425,8 @@ def run_universe(
                         LOGGER.warning(f"WFO error {strat_name} {symbol} {tf}: {e}")
 
                 dsr = deflated_sharpe_ratio(s, T=r.size if r.size else 1, trials=max(trials,1))
+                # Skip storing returns for correlation here - it's memory intensive
+                # Correlation filter will be applied at allocation time if needed
                 return {
                     "strategy": strat_name,
                     "exchange": exchange,
@@ -352,16 +452,49 @@ def run_universe(
 
         return local_rows
 
-    if fetch_workers and fetch_workers > 1:
-        with futures.ThreadPoolExecutor(max_workers=fetch_workers) as ex:
-            futs = [ex.submit(_process_symbol_tf, s, tf) for (s, tf) in tasks]
-            for fut in futures.as_completed(futs):
-                for row in (fut.result() or []):
-                    rows.append(row)
-    else:
-        for s, tf in tasks:
-            for row in _process_symbol_tf(s, tf):
-                rows.append(row)
+    # Adaptive Batch Processing
+    import psutil
+    
+    def get_optimal_batch_size(task_count: int) -> int:
+        try:
+            mem = psutil.virtual_memory()
+            available_gb = mem.available / (1024 ** 3)
+            # Conservative estimate: 100MB per task (symbol/tf)
+            # This depends heavily on data size, but it's a heuristic.
+            # Leave 2GB buffer.
+            safe_tasks = int((available_gb - 2.0) * 10) 
+            safe_tasks = max(1, min(safe_tasks, 50)) # Clamp between 1 and 50
+            return safe_tasks
+        except Exception:
+            return 10 # Fallback
+            
+    batch_size = get_optimal_batch_size(len(tasks))
+    LOGGER.info(f"Adaptive Batch Size: {batch_size} (Tasks: {len(tasks)})")
+
+    for i in range(0, len(tasks), batch_size):
+        batch = tasks[i : i + batch_size]
+        LOGGER.info(f"Processing batch {i // batch_size + 1}/{(len(tasks) + batch_size - 1) // batch_size} ({len(batch)} tasks)")
+        
+        if fetch_workers and fetch_workers > 1:
+            with futures.ThreadPoolExecutor(max_workers=fetch_workers) as ex:
+                futs = [ex.submit(_process_symbol_tf, s, tf) for (s, tf) in batch]
+                for fut in futures.as_completed(futs):
+                    try:
+                        for row in (fut.result() or []):
+                            rows.append(row)
+                    except Exception as e:
+                        LOGGER.error(f"Batch processing error: {e}")
+        else:
+            for s, tf in batch:
+                try:
+                    for row in _process_symbol_tf(s, tf):
+                        rows.append(row)
+                except Exception as e:
+                    LOGGER.error(f"Task processing error {s} {tf}: {e}")
+        
+        # Explicit garbage collection between batches
+        import gc
+        gc.collect()
 
     # Concentration limits: measure before/after
     ok_before_caps = sum(1 for r in rows if (r.get("metrics") or {}).get("ok"))

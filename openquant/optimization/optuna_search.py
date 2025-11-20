@@ -33,7 +33,7 @@ def optuna_best_params(
     fee_bps: float,
     weight: float,
     timeframe: str,
-    n_trials: int = 20,
+    n_trials: int = 20,  # Reduced from 50 for speed
 ) -> Dict[str, Any]:
     """Run an Optuna study to pick best params from the (categorical) grid.
     Returns best parameter dict.

@@ -50,13 +50,53 @@ def _nppf(p: float) -> float:
            (((((_b[0]*r+_b[1])*r+_b[2])*r+_b[3])*r+_b[4])*r+1.0)
 
 
-def deflated_sharpe_ratio(sharpe: float, T: int, trials: int) -> float:
-    if T <= 1 or not np.isfinite(sharpe) or trials <= 1:
-        return float(sharpe)
-    z = float(sharpe) * math.sqrt(float(T))
-    p = 1.0 - _ncdf(z)                       # one-sided tail
-    p_adj = 1.0 - (1.0 - p) ** max(1, int(trials))  # Šidák
-    p_adj = min(max(p_adj, 1e-16), 1.0 - 1e-16)
-    z_adj = _nppf(1.0 - p_adj)
-    return float(z_adj / math.sqrt(float(T)))
+def deflated_sharpe_ratio(sharpe: float, T: int, trials: int = 1) -> float:
+    """Compute the Deflated Sharpe Ratio.
+    
+    Adjusts the Sharpe ratio to account for:
+    - Multiple testing (trials)
+    - Sample size (T)
+    
+    Args:
+        sharpe: Observed Sharpe ratio
+        T: Number of observations (bars)
+        trials: Number of trials/strategies tested
+        
+    Returns:
+        Deflated Sharpe Ratio (can be negative)
+    """
+    if T <= 1:
+        return sharpe
+    # Ensure trials >= 1
+    trials = max(1, int(trials))
+    
+    # Variance of Sharpe estimate
+    var_sr = (1 + 0.5 * sharpe**2) / T
+    std_sr = var_sr**0.5
+    
+    # Expected max Sharpe under null (no skill)
+    # Using Euler-Mascheroni constant γ ≈ 0.5772
+    gamma = 0.5772156649
+    E_max_sr = (2 * math.log(trials))**0.5 - gamma / (2 * (2 * math.log(trials))**0.5)
+    
+    # Deflated SR
+    dsr = (sharpe - E_max_sr) / std_sr if std_sr > 0 else sharpe
+    return float(dsr)
 
+def deflated_sharpe_ratio_with_complexity(
+    sharpe: float, 
+    T: int, 
+    trials: int = 1, 
+    num_params: int = 1,
+    complexity_penalty: float = 0.1
+) -> float:
+    """DSR with complexity penalty.
+    
+    Additional Args:
+        num_params: Number of tunable parameters in the strategy
+        complexity_penalty: Penalty factor per parameter (e.g., 0.1)
+    """
+    base_dsr = deflated_sharpe_ratio(sharpe, T, trials)
+    # Penalize for each parameter beyond 1
+    penalty = complexity_penalty * max(0, num_params - 1)
+    return base_dsr - penalty

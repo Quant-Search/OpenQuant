@@ -69,13 +69,19 @@ class PortfolioGuard:
                 return False, msg
         return True, "OK"
 
-    def on_cycle_start(self, current_equity: float) -> Tuple[bool, str]:
+    def on_cycle_start(self, current_equity: float, holdings: Optional[Dict[str, float]] = None) -> Tuple[bool, str]:
         """Call at the start of every cycle to check limits.
         Returns: (is_safe, reason)
         """
         # 1. Daily Reset
         today = date.today()
         if today > self.current_date:
+            # Record previous day's return
+            if self.start_day_equity > 0:
+                daily_ret = (current_equity - self.start_day_equity) / self.start_day_equity
+                self.record_daily_return(daily_ret)
+                LOGGER.info(f"Recorded Daily Return: {daily_ret:.4%}")
+
             LOGGER.info(f"New Day: Resetting Daily Loss Counter. Old Start Equity: {self.start_day_equity}, New: {current_equity}")
             self.start_day_equity = current_equity
             self.current_date = today
@@ -113,6 +119,13 @@ class PortfolioGuard:
             msg = f"CVaR LIMIT BREACHED: {cvar:.2%} > {self.limits['cvar_limit']:.2%}. Stopping Robot."
             send_alert("RISK ALERT: CVaR", msg)
             return False, msg
+
+        # 6. Check Exposure (if holdings provided)
+        if holdings:
+            is_safe_exp, msg_exp = self.check_exposure(holdings, current_equity)
+            if not is_safe_exp:
+                send_alert("RISK ALERT: Exposure Limit", msg_exp)
+                return False, msg_exp
 
         return True, "OK"
 

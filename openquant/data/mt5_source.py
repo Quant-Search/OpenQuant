@@ -120,11 +120,11 @@ def fetch_ohlcv(symbol: str,
     """Fetch OHLCV from MT5 and return standardized DataFrame.
     Index is UTC datetime; columns: Open, High, Low, Close, Volume.
     """
-    mt5 = _ensure_init()
-    tf_const = _tf_const(mt5, timeframe)
-
-    # Build rates array using either range or count
     try:
+        mt5 = _ensure_init()
+        tf_const = _tf_const(mt5, timeframe)
+
+        # Build rates array using either range or count
         if since is not None:
             # Ensure timezone-aware UTC
             if since.tzinfo is None:
@@ -134,22 +134,109 @@ def fetch_ohlcv(symbol: str,
         else:
             cnt = int(limit) if limit and int(limit) > 0 else 1000
             rates = mt5.copy_rates_from_pos(symbol, tf_const, 0, cnt)
+            
+        if rates is None or len(rates) == 0:
+            return pd.DataFrame(columns=["Open","High","Low","Close","Volume"]).astype(float)
+
+        import numpy as np
+        r = pd.DataFrame(rates)
+        # MT5 returns 'time' in seconds since epoch
+        r["time"] = pd.to_datetime(r["time"], unit="s", utc=True)
+        r = r.rename(columns={"open":"Open","high":"High","low":"Low","close":"Close","tick_volume":"Volume"})
+        r = r.set_index("time")[ ["Open","High","Low","Close","Volume"] ].astype(float)
+        r = r.sort_index()
+        r = r[~r.index.duplicated(keep="last")]
+        r = r[(r[["Open","High","Low","Close","Volume"]] >= 0).all(axis=1)]
+        return r
+
     except Exception as e:
-        raise RuntimeError(f"MT5 copy_rates failed for {symbol} {timeframe}: {e}")
-
-    if rates is None or len(rates) == 0:
-        return pd.DataFrame(columns=["Open","High","Low","Close","Volume"]).astype(float)
-
-    import numpy as np
-    r = pd.DataFrame(rates)
-    # MT5 returns 'time' in seconds since epoch
-    r["time"] = pd.to_datetime(r["time"], unit="s", utc=True)
-    r = r.rename(columns={"open":"Open","high":"High","low":"Low","close":"Close","tick_volume":"Volume"})
-    r = r.set_index("time")[ ["Open","High","Low","Close","Volume"] ].astype(float)
-    r = r.sort_index()
-    r = r[~r.index.duplicated(keep="last")]
-    r = r[(r[["Open","High","Low","Close","Volume"]] >= 0).all(axis=1)]
-    return r
+        # Fallback to yfinance
+        try:
+            import yfinance as yf
+            yf_symbol = symbol
+            if len(symbol) == 6 and symbol.isupper() and "USD" in symbol:
+                # Heuristic for Forex
+                yf_symbol = f"{symbol}=X"
+            
+            # Map timeframe
+            yf_tf = timeframe
+            if timeframe == "4h":
+                # yfinance doesn't support 4h well, use 1h and resample? 
+                # Or just try 1h. 
+                # yfinance supports: 1m, 2m, 5m, 15m, 30m, 60m, 90m, 1h, 1d, 5d, 1wk, 1mo, 3mo
+                # It does NOT support 4h directly.
+                yf_tf = "1h"
+            
+            data = yf.download(yf_symbol, period="1mo", interval=yf_tf, progress=False, auto_adjust=False)
+            
+            if data.empty:
+                return pd.DataFrame(columns=["Open","High","Low","Close","Volume"]).astype(float)
+                
+            # Flatten MultiIndex columns if present (yfinance >= 0.2.50)
+            if isinstance(data.columns, pd.MultiIndex):
+                data.columns = data.columns.get_level_values(0)
+                
+            # Format
+            data = data.reset_index()
+            # data.columns = [str(c).capitalize() for c in data.columns] # This might be risky if columns are already capitalized or different
+            
+            # Robust renaming
+            rename_map = {
+                "Date": "timestamp",
+                "Datetime": "timestamp",
+                "Index": "timestamp",
+                "Timestamp": "timestamp",
+                "open": "Open",
+                "high": "High",
+                "low": "Low",
+                "close": "Close",
+                "volume": "Volume",
+                "Adj Close": "Adj Close"
+            }
+            # Capitalize first to match map keys if needed, or just map case-insensitive?
+            # Let's iterate and map
+            new_cols = []
+            for c in data.columns:
+                s = str(c)
+                # Try exact match
+                if s in rename_map:
+                    new_cols.append(rename_map[s])
+                # Try capitalized
+                elif s.capitalize() in rename_map:
+                    new_cols.append(rename_map[s.capitalize()])
+                else:
+                    new_cols.append(s)
+            data.columns = new_cols
+            
+            if "timestamp" in data.columns:
+                data = data.set_index("timestamp")
+            
+            # Ensure numeric types
+            cols = ["Open", "High", "Low", "Close", "Volume"]
+            for c in cols:
+                if c in data.columns:
+                    data[c] = data[c].astype(float)
+            
+            # Deduplicate and clean
+            data = data[~data.index.duplicated(keep="last")]
+            data = data.dropna()
+            
+            # Resample if needed
+            if timeframe == "4h" and yf_tf == "1h":
+                agg_dict = {
+                    "Open": "first",
+                    "High": "max",
+                    "Low": "min",
+                    "Close": "last",
+                    "Volume": "sum"
+                }
+                agg_dict = {k: v for k, v in agg_dict.items() if k in data.columns}
+                data = data.resample("4h").agg(agg_dict).dropna()
+            
+            return data[["Open","High","Low","Close","Volume"]]
+            
+        except Exception as yf_err:
+            raise RuntimeError(f"MT5 failed ({e}) and yfinance fallback failed: {yf_err}")
 
 
 def discover_fx_symbols(top_n: int = 20) -> List[str]:

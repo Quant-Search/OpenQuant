@@ -74,17 +74,30 @@ class RobotScheduler:
             try:
                 self._run_cycle()
                 self.last_run_time = datetime.now()
-                self.status_message = f"Sleeping (Last run: {self.last_run_time.strftime('%H:%M')})"
-                
                 # Calculate next run
                 sleep_secs = self.interval_minutes * 60
                 self.next_run_time = datetime.now() + timedelta(seconds=sleep_secs)
+                wake_time = self.next_run_time.strftime('%H:%M')
+                self.status_message = f"Active (Sleeping until {wake_time})"
                 
                 # Sleep in chunks
+                last_regime_check = datetime.now()
+                current_trend = getattr(self, "_last_trend", "neutral")
+                
                 for _ in range(sleep_secs):
                     if self._stop_event.is_set():
                         break
                     time.sleep(1)
+                    
+                    # Intra-cycle Regime Check (every 1 hour)
+                    if (datetime.now() - last_regime_check).total_seconds() > 3600:
+                        LOGGER.info("Performing Intra-Cycle Regime Check...")
+                        new_trend = self._check_global_trend()
+                        if new_trend != current_trend and current_trend != "neutral":
+                            LOGGER.warning(f"⚠️ REGIME FLIP DETECTED: {current_trend} -> {new_trend}")
+                            self.status_message = f"⚠️ REGIME FLIP: {new_trend.upper()}"
+                            # Optional: Trigger emergency re-evaluation here
+                        last_regime_check = datetime.now()
                     
             except Exception as e:
                 LOGGER.error(f"Auto-Pilot Cycle Error: {e}", exc_info=True)
@@ -131,9 +144,21 @@ class RobotScheduler:
                 self.stop()
                 self.status_message = f"RISK STOP: {reason}"
                 self.error_message = reason
+                
+                # Emergency Close
+                if cfg.get("use_mt5"):
+                    try:
+                        from openquant.paper.mt5_bridge import close_all_positions
+                        n = close_all_positions()
+                        LOGGER.warning(f"Emergency Close: Liquidated {n} positions.")
+                    except Exception as e:
+                        LOGGER.error(f"Emergency Close Failed: {e}")
                 return
         except Exception as e:
             LOGGER.warning(f"Could not check risk pre-flight (first run?): {e}")
+
+        # 0.5 Global Trend Check
+        global_trend = self._check_global_trend()
 
         # 1. Research
         LOGGER.info(f"Auto-Pilot: Running Universe Research (top_n={cfg['top_n']})...")
@@ -142,7 +167,7 @@ class RobotScheduler:
              pass 
              
         exchange = "mt5" if cfg.get("use_mt5") else "binance"
-        run_universe(exchange=exchange, top_n=int(cfg["top_n"]))
+        run_universe(exchange=exchange, top_n=int(cfg["top_n"]), global_trend=global_trend)
         
         # 2. Load Allocation
         # Find latest allocation file
@@ -262,23 +287,38 @@ class RobotScheduler:
         try:
             # Calculate equity using the snapshot prices we just used
             pos_val = 0.0
+            holdings_map = {}
             for k, units in state.holdings.items():
                 # k is (Exchange, Symbol, Timeframe, Strategy)
                 # snap.prices keys are (Exchange, Symbol, Timeframe, Strategy)
                 price = snap.prices.get(k, 0.0)
-                pos_val += units * price
+                val = units * price
+                pos_val += val
+                
+                # Aggregate value by symbol for exposure check
+                sym = k[1]
+                holdings_map[sym] = holdings_map.get(sym, 0.0) + val
             
             new_equity = state.cash + pos_val
-            is_safe, reason = GUARD.on_cycle_start(new_equity) # Re-check to update HWM/Daily stats
+            is_safe, reason = GUARD.on_cycle_start(new_equity, holdings=holdings_map) # Re-check to update HWM/Daily stats
             if not is_safe:
                 LOGGER.error(f"RISK STOP (Post-Exec): {reason}")
                 self.stop()
                 self.status_message = f"RISK STOP: {reason}"
                 self.error_message = reason
-                # TODO: Close all positions here if needed
+                
+                # Emergency Close
+                if cfg.get("use_mt5"):
+                    try:
+                        from openquant.paper.mt5_bridge import close_all_positions
+                        n = close_all_positions()
+                        LOGGER.warning(f"Emergency Close: Liquidated {n} positions.")
+                    except Exception as e:
+                        LOGGER.error(f"Emergency Close Failed: {e}")
         except Exception as e:
             LOGGER.error(f"Failed to update risk state: {e}")
 
+        # 4. MT5 Execution (if enabled)
         # 4. MT5 Execution (if enabled)
         if cfg.get("use_mt5"):
             LOGGER.info("Auto-Pilot: Syncing with MT5...")
@@ -295,6 +335,32 @@ class RobotScheduler:
                 LOGGER.error(f"MT5 Sync Failed: {e}")
             
         LOGGER.info("Auto-Pilot: Cycle Complete")
+
+    def _check_global_trend(self) -> str:
+        """Check global market trend (BTC/USDT SMA200)."""
+        global_trend = "neutral"
+        try:
+            import ccxt
+            import pandas as pd
+            
+            # Use a fresh instance or cached one
+            ex_trend = ccxt.binance()
+            ohlcv = ex_trend.fetch_ohlcv("BTC/USDT", timeframe="1d", limit=250)
+            if ohlcv:
+                df_trend = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
+                close = df_trend["close"]
+                sma200 = close.rolling(200).mean().iloc[-1]
+                current_price = close.iloc[-1]
+                
+                if current_price < sma200:
+                    global_trend = "bear"
+                elif current_price > sma200:
+                    global_trend = "bull"
+                    
+                LOGGER.info(f"Global Trend (BTC/USDT): {global_trend.upper()} (Price: {current_price}, SMA200: {sma200})")
+        except Exception as e:
+            LOGGER.warning(f"Could not check global trend: {e}")
+        return global_trend
 
 # Global instance
 SCHEDULER = RobotScheduler()

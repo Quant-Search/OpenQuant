@@ -39,6 +39,23 @@ def validate_ohlcv(df: pd.DataFrame) -> List[str]:
     # Size
     if len(df) < 10:
         issues.append("too_few_rows")
+        
+    # Sanity Check: Volume
+    # If average volume is very low (e.g. < $1000 or < 100 units), it's risky.
+    # We don't know the price unit here easily without multiplying, but we can check raw volume.
+    # Let's assume crypto/forex context where volume should be substantial.
+    # Warning only, as some assets might be low volume but valid.
+    if df['Volume'].mean() < 1.0:
+        issues.append("low_volume_warning")
+    
+    # Spike Filter: Detect unrealistic price movements
+    # Calculate percent change for each bar
+    pct_change = df['Close'].pct_change().abs()
+    # If any single bar moves > 50%, it's likely a data error (or flash crash)
+    # We use 50% as a very generous threshold; most real moves are < 20%
+    if (pct_change > 0.5).any():
+        issues.append("price_spike_detected")
+        
     return issues
 
 
