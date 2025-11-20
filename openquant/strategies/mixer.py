@@ -66,7 +66,81 @@ class StrategyMixer:
     def optimize_weights(self, df: pd.DataFrame):
         """
         Find optimal weights based on historical performance (Sharpe).
-        Simple Monte Carlo or Scipy Optimize.
+        Uses scipy.optimize to maximize Portfolio Sharpe Ratio.
         """
-        # Placeholder for future implementation
-        pass
+        try:
+            from scipy.optimize import minimize
+        except ImportError:
+            print("scipy not installed, skipping optimization.")
+            return
+
+        # 1. Get returns for each strategy
+        returns_list = []
+        valid_indices = []
+        
+        # Calculate market returns once
+        market_ret = df['Close'].pct_change().fillna(0)
+        
+        for i, strat in enumerate(self.strategies):
+            try:
+                # Generate signals
+                sig = strat.generate_signals(df)
+                # Ensure signal is -1, 0, 1
+                sig = sig.clip(-1, 1).fillna(0)
+                
+                # Calculate strategy returns (lagged signal * return)
+                # Signal at t determines position at t+1
+                strat_ret = sig.shift(1).fillna(0) * market_ret
+                
+                returns_list.append(strat_ret)
+                valid_indices.append(i)
+            except Exception as e:
+                print(f"Strategy {i} optimization failed: {e}")
+        
+        if not returns_list:
+            return
+
+        # 2. Define Objective Function (Negative Sharpe)
+        # Align all returns to same index (should be already)
+        returns_df = pd.DataFrame(returns_list).T.fillna(0)
+        
+        def neg_sharpe(weights):
+            # Portfolio Return
+            port_ret = (returns_df * weights).sum(axis=1)
+            
+            mean_ret = port_ret.mean()
+            std_ret = port_ret.std()
+            
+            if std_ret == 0:
+                return 0.0
+            
+            # Maximize Sharpe => Minimize Negative Sharpe
+            return - (mean_ret / std_ret)
+
+        # 3. Optimize
+        n = len(returns_list)
+        # Constraints: Sum(weights) = 1
+        constraints = ({'type': 'eq', 'fun': lambda x: np.sum(x) - 1})
+        # Bounds: 0 <= weight <= 1 (Long only weights, no shorting strategies themselves)
+        bounds = tuple((0, 1) for _ in range(n))
+        initial_weights = [1./n] * n
+        
+        try:
+            result = minimize(neg_sharpe, initial_weights, method='SLSQP', bounds=bounds, constraints=constraints)
+            
+            if result.success:
+                # Map back to full list of strategies
+                new_weights = [0.0] * len(self.strategies)
+                for idx, weight in zip(valid_indices, result.x):
+                    new_weights[idx] = max(0.0, float(weight)) # Ensure no negative dust
+                
+                # Normalize again just in case
+                s = sum(new_weights)
+                if s > 0:
+                    self.weights = [w/s for w in new_weights]
+                
+                print(f"Optimized Weights: {[f'{w:.2f}' for w in self.weights]}")
+            else:
+                print(f"Optimization failed: {result.message}")
+        except Exception as e:
+            print(f"Optimization error: {e}")
