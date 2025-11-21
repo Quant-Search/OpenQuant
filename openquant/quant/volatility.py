@@ -51,3 +51,17 @@ def parkinson_volatility(high: pd.Series, low: pd.Series, window: int = 20) -> p
     const = 1.0 / (4.0 * np.log(2.0))
     rs = np.log(high / low) ** 2
     return np.sqrt(const * rs.rolling(window=window).mean())
+
+def garman_klass_volatility(open_: pd.Series, high: pd.Series, low: pd.Series, close: pd.Series, window: int = 20) -> pd.Series:
+    """
+    Garman-Klass volatility estimator.
+    Uses OHLC to be more efficient than Parkinson (HL) or Close-Close.
+    
+    Sigma^2 = 0.5 * (ln(H/L))^2 - (2*ln(2) - 1) * (ln(C/O))^2
+    """
+    log_hl = np.log(high / low)
+    log_co = np.log(close / open_)
+    
+    rs = 0.5 * log_hl**2 - (2 * np.log(2) - 1) * log_co**2
+    
+    return np.sqrt(rs.rolling(window=window).mean())

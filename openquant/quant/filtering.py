@@ -111,3 +111,46 @@ def run_kalman_strategy(series_y: pd.Series, series_x: pd.Series, delta: float =
     res['z_score'] = res['spread'] / res['spread_std']
     
     return res
+
+def hp_filter(series: pd.Series, lamb: float = 1600) -> Tuple[pd.Series, pd.Series]:
+    """
+    Hodrick-Prescott Filter to separate Trend and Cycle.
+    y_t = tau_t + c_t
+    
+    Args:
+        series: Time series data.
+        lamb: Smoothing parameter (1600 for quarterly, 6.25 for annual, 129600 for monthly?).
+              For daily crypto data, usually much higher (e.g. 100*252^2?).
+              Standard defaults: 1600 (Quarterly), 14400 (Monthly), 100 (Annual).
+              For Daily, literature suggests 1600 * 4^4? No.
+              Ravn and Uhlig: lambda = 1600 * (freq/4)^4.
+              Daily: 1600 * (365/4)^4 approx 1e8.
+              Common practice: try 1600 or adjust visually.
+              
+    Returns:
+        (trend, cycle) as pd.Series
+    """
+    # Solve (I + lambda * D^T * D) * tau = y
+    import scipy.sparse as sp
+    from scipy.sparse.linalg import spsolve
+    
+    n = len(series)
+    if n < 4:
+        return series, pd.Series(0, index=series.index)
+        
+    # Second difference matrix D
+    # D = [[1, -2, 1, 0...], [0, 1, -2, 1...]]
+    data = [1, -2, 1]
+    diags = [0, 1, 2]
+    D = sp.spdiags([data] * (n-2), diags, n-2, n)
+    
+    # F = I + lambda * D^T * D
+    I = sp.eye(n)
+    F = I + lamb * D.T @ D
+    
+    # Solve F * tau = y
+    tau = spsolve(F, series.values)
+    
+    trend = pd.Series(tau, index=series.index)
+    cycle = series - trend
+    return trend, cycle
