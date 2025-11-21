@@ -1,0 +1,28 @@
+#!/usr/bin/env python3
+"""
+OpenQuant - Quick Start Script
+Runs the robot CLI which automatically launches the dashboard.
+"""
+import os
+import sys
+import subprocess
+from pathlib import Path
+
+def main():
+    project_root = Path(__file__).parent
+    script_path = project_root / "scripts" / "run_robot_cli.py"
+    
+    print("🚀 Initializing OpenQuant...")
+    
+    # Forward arguments to the CLI script
+    args = [sys.executable, str(script_path)] + sys.argv[1:]
+    
+    try:
+        subprocess.run(args, cwd=project_root, check=True)
+    except KeyboardInterrupt:
+        pass
+    except Exception as e:
+        print(f"Error: {e}")
+
+if __name__ == "__main__":
+    main()

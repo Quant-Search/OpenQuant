@@ -167,7 +167,23 @@ class RobotScheduler:
              pass 
              
         exchange = "mt5" if cfg.get("use_mt5") else "binance"
-        run_universe(exchange=exchange, top_n=int(cfg["top_n"]), global_trend=global_trend)
+        # Map symbols if using Alpaca (BTC/USD -> BTC/USDT for Binance data)
+        symbols = cfg.get("symbols")
+        if symbols and exchange == "binance":
+            mapped_symbols = []
+            for s in symbols:
+                if s.endswith("/USD"):
+                    mapped_symbols.append(s.replace("/USD", "/USDT"))
+                else:
+                    mapped_symbols.append(s)
+            symbols = mapped_symbols
+
+        run_universe(
+            exchange=exchange, 
+            top_n=int(cfg["top_n"]), 
+            global_trend=global_trend,
+            symbols=symbols
+        )
         
         # 2. Load Allocation
         # Find latest allocation file
@@ -366,19 +382,64 @@ class RobotScheduler:
                     target_weights[sym] = target_weights.get(sym, 0.0) + w
                 
                 # 3. Generate Orders (Diff)
-                # We can use our Rebalancer logic here!
-                # But Rebalancer is generic. Let's do a simple diff loop for now.
+                # Simple Rebalancing Logic:
+                # Target Value = Equity * Target Weight
+                # Current Value = Current Qty * Price
+                # Delta Value = Target Value - Current Value
+                # Delta Qty = Delta Value / Price
                 
-                # Get Prices (we have them in 'snap' or fetch fresh)
-                # We need fresh prices for accurate sizing
-                # Alpaca broker doesn't have get_price(sym) yet, but we can use snapshot prices
-                
-                # For now, let's just log what we WOULD do, to be safe, or implement a basic rebalance
-                LOGGER.info(f"Alpaca Targets: {target_weights}")
-                
-                # TODO: Implement full diff execution here using Broker.place_order
-                # For this iteration, we just connect the broker. 
-                # Full execution logic requires robust symbol mapping and price fetching.
+                for sym, target_weight in target_weights.items():
+                    # Get Price (from snapshot if available, else fetch)
+                    # We use the snapshot prices we collected earlier
+                    # We need to find the price for this symbol (ignoring strategy/tf keys)
+                    price = 0.0
+                    for k, p in snap.prices.items():
+                        if k[1] == sym:
+                            price = p
+                            break
+                    
+                    if price <= 0:
+                        # Fallback: try to fetch from broker if possible or skip
+                        # Alpaca broker doesn't expose get_price directly yet, but we can try
+                        # For now, skip if no price
+                        LOGGER.warning(f"Alpaca: No price for {sym}, skipping.")
+                        continue
+                        
+                    current_qty = float(current_pos.get(sym, 0.0))
+                    current_val = current_qty * price
+                    target_val = equity * target_weight
+                    
+                    delta_val = target_val - current_val
+                    
+                    # Threshold to avoid dust trades (e.g. < $10)
+                    if abs(delta_val) < 10.0:
+                        continue
+                        
+                    delta_qty = delta_val / price
+                    side = "buy" if delta_qty > 0 else "sell"
+                    qty_abs = abs(delta_qty)
+                    
+                    # Round quantity to reasonable precision (e.g. 4 decimals for crypto)
+                    # Alpaca handles fractional shares for many assets
+                    qty_abs = round(qty_abs, 5)
+                    
+                    if qty_abs == 0:
+                        continue
+                        
+                    LOGGER.info(f"Alpaca Order: {side.upper()} {qty_abs} {sym} (Delta: ${delta_val:.2f})")
+                    
+                    try:
+                        broker.place_order(
+                            symbol=sym,
+                            quantity=qty_abs,
+                            side=side,
+                            order_type="market"
+                        )
+                    except Exception as oe:
+                        LOGGER.error(f"Alpaca Order Failed {sym}: {oe}")
+
+                # Sync TCA after orders
+                broker.sync_tca()
                 
             except Exception as e:
                 LOGGER.error(f"Alpaca Sync Failed: {e}")
@@ -394,7 +455,9 @@ class RobotScheduler:
             
             # Use a fresh instance or cached one
             ex_trend = ccxt.binance()
-            ohlcv = ex_trend.fetch_ohlcv("BTC/USDT", timeframe="1d", limit=250)
+            # Map BTC/USD to BTC/USDT if needed
+            sym = "BTC/USDT"
+            ohlcv = ex_trend.fetch_ohlcv(sym, timeframe="1d", limit=250)
             if ohlcv:
                 df_trend = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
                 close = df_trend["close"]

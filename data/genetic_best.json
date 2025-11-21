@@ -1,0 +1,4 @@
+{
+  "genome_str": "ENTRY: ((efficiency_ratio(period=50) < 0.39) AND (zscore(window=38) < -1.83))",
+  "fitness": 1.573984910185169
+}

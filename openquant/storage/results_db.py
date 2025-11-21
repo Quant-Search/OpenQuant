@@ -87,6 +87,25 @@ def _refresh_best_view(con: duckdb.DuckDBPyConnection) -> None:  # type: ignore
 
 
 
+import time
+import random
+
+def _connect_with_retry(db_path: str | Path, read_only: bool = False, retries: int = 5) -> duckdb.DuckDBPyConnection:
+    """Connect to DuckDB with retry logic for locking issues."""
+    dbp = str(db_path)
+    last_err = None
+    for i in range(retries):
+        try:
+            return duckdb.connect(database=dbp, read_only=read_only)
+        except duckdb.IOException as e:
+            if "lock" in str(e).lower():
+                last_err = e
+                sleep_time = 0.1 * (2 ** i) + random.uniform(0, 0.1)
+                time.sleep(sleep_time)
+                continue
+            raise e
+    raise last_err
+
 def get_best_params(db_path: str | Path,
                      exchange: str,
                      symbol: str,
@@ -98,13 +117,17 @@ def get_best_params(db_path: str | Path,
     dbp = Path(db_path)
     if not dbp.exists():
         return None
-    con = duckdb.connect(database=str(dbp))
     try:
-        _ensure_schema(con)
-        _refresh_best_view(con)
+        con = _connect_with_retry(dbp, read_only=True)
+    except Exception:
+        return None
+        
+    try:
+        # Schema check might fail in read_only mode if table doesn't exist
+        # But if file exists, we assume schema is there or we catch error
         df = con.execute(
             """
-            SELECT params FROM best_configs
+            SELECT params FROM results
             WHERE exchange = ? AND symbol = ? AND timeframe = ? AND strategy = ?
             ORDER BY ts DESC LIMIT 1
             """,
@@ -122,9 +145,10 @@ def get_best_params(db_path: str | Path,
         except Exception:
             return None
         return None
+    except Exception:
+        return None
     finally:
         con.close()
-
 
 
 def get_best_config(db_path: str | Path,
@@ -138,16 +162,22 @@ def get_best_config(db_path: str | Path,
     dbp = Path(db_path)
     if not dbp.exists():
         return None, None
-    con = duckdb.connect(database=str(dbp))
     try:
-        _ensure_schema(con)
-        _refresh_best_view(con)
+        con = _connect_with_retry(dbp, read_only=True)
+    except Exception:
+        return None, None
+        
+    try:
+        # We can't use the VIEW in read-only mode if it wasn't created.
+        # So we use raw query instead of best_configs view to be safe in read-only.
         df = con.execute(
             """
             SELECT params, COALESCE(wfo_mts, dsr, sharpe) AS score
-            FROM best_configs
+            FROM results
             WHERE exchange = ? AND symbol = ? AND timeframe = ? AND strategy = ?
-            ORDER BY ts DESC LIMIT 1
+            AND ok = true
+            ORDER BY ts DESC, score DESC
+            LIMIT 1
             """,
             (exchange, symbol, timeframe, strategy),
         ).df()
@@ -168,9 +198,10 @@ def get_best_config(db_path: str | Path,
         except Exception:
             score_val = None
         return params_dict, score_val
+    except Exception:
+        return None, None
     finally:
         con.close()
-
 
 
 def get_best_snapshot(db_path: str | Path) -> dict:
@@ -182,15 +213,30 @@ def get_best_snapshot(db_path: str | Path) -> dict:
     dbp = Path(db_path)
     if not dbp.exists():
         return {}
-    con = duckdb.connect(database=str(dbp))
     try:
-        _ensure_schema(con)
-        _refresh_best_view(con)
+        con = _connect_with_retry(dbp, read_only=True)
+    except Exception:
+        return {}
+        
+    try:
+        # Raw query to avoid view dependency in read-only
         df = con.execute(
             """
+            WITH ranked AS (
+                SELECT *,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY exchange, symbol, timeframe, strategy
+                           ORDER BY ts DESC,
+                                    COALESCE(wfo_mts, dsr) DESC,
+                                    dsr DESC,
+                                    sharpe DESC
+                       ) AS rn
+                FROM results
+                WHERE ok = true
+            )
             SELECT exchange, symbol, timeframe, strategy,
                    ts, params, COALESCE(wfo_mts, dsr, sharpe) AS score
-            FROM best_configs
+            FROM ranked WHERE rn = 1
             """
         ).df()
         snap = {}
@@ -203,6 +249,8 @@ def get_best_snapshot(db_path: str | Path) -> dict:
             val = (ts_iso, params_json, float(row["score"]) if row.get("score") is not None else None)
             snap[key] = val
         return snap
+    except Exception:
+        return {}
     finally:
         con.close()
 
@@ -247,7 +295,15 @@ def upsert_results(rows: List[Dict[str, Any]], db_path: str | Path = "data/resul
                 float(m.get("wfo_mts", 0.0)),
             )
         )
-    con = duckdb.connect(database=str(db_path))
+    
+    # Write needs lock, so we retry
+    try:
+        con = _connect_with_retry(db_path, read_only=False)
+    except Exception as e:
+        # If we can't write, we just log and return (data loss but no crash)
+        print(f"Failed to acquire DB lock for writing: {e}")
+        return db_path
+        
     try:
         _ensure_schema(con)
         con.executemany(
@@ -258,7 +314,8 @@ def upsert_results(rows: List[Dict[str, Any]], db_path: str | Path = "data/resul
             """,
             prepared,
         )
-        _refresh_best_view(con)
+        # We don't need to refresh view if we use raw queries in readers
+        # _refresh_best_view(con) 
     finally:
         con.close()
     return db_path

@@ -2,6 +2,7 @@
 from __future__ import annotations
 from dataclasses import dataclass
 import pandas as pd
+import numpy as np
 
 
 @dataclass
@@ -72,30 +73,48 @@ def backtest_signals(
     
     # SL/TP Logic: Modify position based on intraday price movements
     if stop_loss_atr or take_profit_atr:
-        entry_price = pd.Series(0.0, index=px.index)
-        sl_price = pd.Series(float('inf'), index=px.index)
-        tp_price = pd.Series(float('inf'), index=px.index)
+        # Convert to numpy for speed
+        px_arr = px.values
+        pos_arr = pos.values
+        atr_arr = atr.values if atr is not None else np.zeros_like(px_arr)
         
-        for i in range(1, len(px)):
-            if pos.iloc[i] == 1 and pos.iloc[i-1] == 0:
+        entry_price = 0.0
+        sl_price = -1.0
+        tp_price = float('inf')
+        
+        # We need to iterate because exit depends on entry state
+        # Using numpy iteration is faster than pandas iloc
+        n = len(px_arr)
+        for i in range(1, n):
+            curr_pos = pos_arr[i]
+            prev_pos = pos_arr[i-1]
+            
+            if curr_pos == 1 and prev_pos == 0:
                 # New entry
-                entry_price.iloc[i] = px.iloc[i-1]
-                if stop_loss_atr and atr is not None:
-                    sl_price.iloc[i] = entry_price.iloc[i] - stop_loss_atr * atr.iloc[i-1]
-                if take_profit_atr and atr is not None:
-                    tp_price.iloc[i] = entry_price.iloc[i] + take_profit_atr * atr.iloc[i-1]
-            elif pos.iloc[i] == 1:
-                # Continue position
-                entry_price.iloc[i] = entry_price.iloc[i-1]
-                sl_price.iloc[i] = sl_price.iloc[i-1]
-                tp_price.iloc[i] = tp_price.iloc[i-1]
+                entry_price = px_arr[i-1] # Entry at previous close (signal generation) or open? 
+                # Standard assumption: Signal at close, trade at close (or next open). 
+                # Here we use previous close as entry reference for SL/TP calculation.
                 
+                if stop_loss_atr:
+                    sl_price = entry_price - stop_loss_atr * atr_arr[i-1]
+                else:
+                    sl_price = -float('inf')
+                    
+                if take_profit_atr:
+                    tp_price = entry_price + take_profit_atr * atr_arr[i-1]
+                else:
+                    tp_price = float('inf')
+                    
+            elif curr_pos == 1:
                 # Check SL hit
-                if stop_loss_atr and px.iloc[i] <= sl_price.iloc[i]:
-                    pos.iloc[i] = 0  # Force exit
+                if stop_loss_atr and px_arr[i] <= sl_price:
+                    pos_arr[i] = 0  # Force exit
                 # Check TP hit
-                elif take_profit_atr and px.iloc[i] >= tp_price.iloc[i]:
-                    pos.iloc[i] = 0  # Force exit
+                elif take_profit_atr and px_arr[i] >= tp_price:
+                    pos_arr[i] = 0  # Force exit
+        
+        # Update pos series from modified array
+        pos = pd.Series(pos_arr, index=px.index)
 
     pos_change = pos.diff().abs().fillna(pos.abs())
     

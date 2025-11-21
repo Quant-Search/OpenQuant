@@ -14,7 +14,13 @@ def get_logger(name: Optional[str] = None, level: int = logging.INFO) -> logging
         handler = logging.StreamHandler()
         fmt = "%(asctime)s | %(levelname)s | %(name)s | %(message)s"
         handler.setFormatter(logging.Formatter(fmt))
+        handler.setFormatter(logging.Formatter(fmt))
         logger.addHandler(handler)
+        
+        # Add File Handler
+        file_handler = logging.FileHandler("openquant.log")
+        file_handler.setFormatter(logging.Formatter(fmt))
+        logger.addHandler(file_handler)
     logger.setLevel(level)
     return logger
 

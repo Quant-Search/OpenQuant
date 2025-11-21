@@ -1,0 +1,17 @@
+{
+  "run_id": "20251121_035019",
+  "allocations": [
+    {
+      "exchange": "binance",
+      "symbol": "BTC/USDT",
+      "timeframe": "1h",
+      "strategy": "hurst",
+      "params": {
+        "lookback": 100,
+        "trend_threshold": 0.55,
+        "mr_threshold": 0.45
+      },
+      "weight": 0.05
+    }
+  ]
+}

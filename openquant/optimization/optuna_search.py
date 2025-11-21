@@ -42,7 +42,39 @@ def optuna_best_params(
     freq = _freq_from_timeframe(timeframe)
 
     def objective(trial: optuna.trial.Trial) -> float:  # type: ignore
-        params = {k: trial.suggest_categorical(k, v) for k, v in zip(keys, vals)}
+        params = {}
+        for k, v_list in zip(keys, vals):
+            # Dynamic type detection for search space
+            if not v_list:
+                continue
+            
+            first_val = v_list[0]
+            if isinstance(first_val, bool):
+                params[k] = trial.suggest_categorical(k, v_list)
+            elif isinstance(first_val, int):
+                # Use int range if list looks like a range
+                if len(v_list) > 1 and all(isinstance(x, int) for x in v_list):
+                    min_v, max_v = min(v_list), max(v_list)
+                    # Step detection (heuristic)
+                    step = 1
+                    if len(v_list) > 2:
+                        sorted_v = sorted(list(set(v_list)))
+                        diffs = [sorted_v[i+1] - sorted_v[i] for i in range(len(sorted_v)-1)]
+                        if len(set(diffs)) == 1:
+                            step = diffs[0]
+                    params[k] = trial.suggest_int(k, min_v, max_v, step=step)
+                else:
+                    params[k] = trial.suggest_categorical(k, v_list)
+            elif isinstance(first_val, float):
+                # Use float range
+                if len(v_list) > 1 and all(isinstance(x, (int, float)) for x in v_list):
+                    min_v, max_v = min(v_list), max(v_list)
+                    params[k] = trial.suggest_float(k, min_v, max_v)
+                else:
+                    params[k] = trial.suggest_categorical(k, v_list)
+            else:
+                params[k] = trial.suggest_categorical(k, v_list)
+
         try:
             strat = make_strategy(strat_name, **params)
             sig = strat.generate_signals(df)
@@ -51,13 +83,14 @@ def optuna_best_params(
             r = res.returns.dropna().values
             T = int(r.size) if r.size else 1
             dsr = float(deflated_sharpe_ratio(s, T=T, trials=max(n_trials, 1)))
-            # We maximize DSR
             return dsr
         except Exception:
-            # Penalize invalid configurations
             return -1e6
 
-    study = optuna.create_study(direction="maximize")
+    # Use TPE Sampler with multivariate enabled for better exploration
+    sampler = optuna.samplers.TPESampler(multivariate=True, seed=42)
+    study = optuna.create_study(direction="maximize", sampler=sampler)
     study.optimize(objective, n_trials=n_trials, show_progress_bar=False)
+    
     return study.best_params if study.best_trial is not None else ({k: vals[i][0] for i, k in enumerate(keys)})
 

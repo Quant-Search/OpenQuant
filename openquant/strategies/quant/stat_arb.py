@@ -21,7 +21,7 @@ class StatArbStrategy(BaseStrategy):
     5. Short Spread (Short Y, Long X) if Z > Threshold.
     6. Exit when Z reverts to 0 (or Stop Loss).
     """
-    def __init__(self, pair_symbol: str, entry_z: float = 2.0, exit_z: float = 0.0, lookback: int = 100):
+    def __init__(self, pair_symbol: str = None, entry_z: float = 2.0, exit_z: float = 0.0, lookback: int = 100):
         """
         pair_symbol: The 'X' symbol (independent variable). The main symbol of the strategy is 'Y'.
         """

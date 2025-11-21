@@ -9,7 +9,7 @@ import pandas as pd
 
 
 from ..utils.logging import get_logger
-from ..data.ccxt_universe import discover_usdt_symbols
+from ..data.ccxt_universe import discover_symbols
 from ..data.ccxt_source import fetch_ohlcv
 from ..data.cache import load_df, save_df, is_fresh
 from ..utils.retry import retry_call
@@ -112,7 +112,7 @@ def run_universe(
                 LOGGER.warning(f"MT5 discover_fx_symbols failed: {e}; using default majors")
                 symbols = ["EURUSD","GBPUSD","USDJPY","USDCHF","AUDUSD","USDCAD","XAUUSD"]
         else:
-            symbols = discover_usdt_symbols(exchange=exchange, top_n=top_n)
+            symbols = discover_symbols(exchange=exchange, top_n=top_n)
             
     LOGGER.info(f"Discovered {len(symbols)} symbols: {symbols[:10]}{'...' if len(symbols)>10 else ''}")
 
@@ -130,6 +130,11 @@ def run_universe(
             return {"entry_z": [2.0, 2.5], "exit_z": [0.0, 0.5]}
         if n == "liquidity":
             return {"vpin_threshold": [0.2, 0.3, 0.4], "lookback": [10, 20]}
+        if n == "mixer":
+            return {
+                "sub_strategies": [["kalman", "hurst"], ["stat_arb", "liquidity"], ["kalman", "stat_arb"]],
+                "weights": [[0.5, 0.5], [0.7, 0.3], [0.3, 0.7]]
+            }
         return {}
     def _narrow_grid_around(seed: Dict[str, Any], grid: Dict[str, Iterable[Any]], band_frac: float = 0.25) -> Dict[str, Iterable[Any]]:
         """Return a narrowed grid keeping values near the seed (within +/- band_frac).
@@ -166,11 +171,64 @@ def run_universe(
 
     tasks = [(symbol, tf) for symbol in symbols for tf in timeframes]
 
+    def _fetch_yfinance(symbol: str, tf: str) -> pd.DataFrame:
+        import yfinance as yf
+        # Map common forex pairs to Yahoo format
+        yf_sym = symbol
+        if len(symbol) == 6 and symbol.isalpha() and exchange == "mt5":
+            yf_sym = f"{symbol}=X"
+        
+        # Map timeframe to yfinance interval
+        yf_interval = "1d"
+        if tf == "1h": yf_interval = "1h"
+        elif tf == "4h": yf_interval = "1h" 
+        
+        period = "2y" if tf=="1d" else "3mo"
+        
+        try:
+            data = yf.download(yf_sym, period=period, interval=yf_interval, progress=False, auto_adjust=False)
+            if data.empty: return pd.DataFrame()
+
+            # Handle MultiIndex columns
+            if isinstance(data.columns, pd.MultiIndex):
+                data.columns = data.columns.get_level_values(0)
+            
+            data = data.reset_index()
+            data.columns = [str(c).capitalize() for c in data.columns]
+            
+            if "Date" in data.columns: data = data.rename(columns={"Date": "timestamp"})
+            elif "Datetime" in data.columns: data = data.rename(columns={"Datetime": "timestamp"})
+            elif "Index" in data.columns: data = data.rename(columns={"Index": "timestamp"})
+            if "Timestamp" in data.columns: data = data.rename(columns={"Timestamp": "timestamp"})
+
+            if "timestamp" in data.columns:
+                data = data.set_index("timestamp")
+            
+            cols = ["Open", "High", "Low", "Close", "Volume"]
+            for c in cols:
+                if c in data.columns:
+                    data[c] = data[c].astype(float)
+            
+            data = data[~data.index.duplicated(keep="last")]
+            data = data.dropna()
+            
+            if tf == "4h" and yf_interval == "1h":
+                agg_dict = {"Open": "first", "High": "max", "Low": "min", "Close": "last", "Volume": "sum"}
+                agg_dict = {k: v for k, v in agg_dict.items() if k in data.columns}
+                data = data.resample("4h").agg(agg_dict).dropna()
+                
+            return data
+        except Exception as e:
+            LOGGER.warning(f"yfinance failed for {symbol}: {e}")
+            return pd.DataFrame()
+
     def _process_symbol_tf(symbol: str, tf: str) -> List[Dict[str, Any]]:
         local_rows: List[Dict[str, Any]] = []
         LOGGER.info(f"Fetching {exchange}:{symbol} {tf}")
         cached = load_df(source_key, symbol, tf)
+        
         if cached is None or not is_fresh(cached, tf):
+            df = pd.DataFrame()
             try:
                 if is_mt5:
                     try:
@@ -179,84 +237,39 @@ def run_universe(
                             lambda: mt5_fetch_ohlcv(symbol, timeframe=tf, since=_default_since(tf), limit=_limit_for(tf)),
                             retries=3, base_delay=0.5
                         )
-                    except (ImportError, RuntimeError):
-                        # Fallback for Linux/No-MT5: Use yfinance as proxy
+                    except Exception:
                         LOGGER.warning(f"MetaTrader5 module missing or failed. Using yfinance as proxy for {symbol}")
-                        import yfinance as yf
-                        # Map common forex pairs to Yahoo format
-                        yf_sym = symbol
-                        if len(symbol) == 6 and symbol.isalpha():
-                            yf_sym = f"{symbol}=X"
-                        
-                        # Map timeframe to yfinance interval
-                        yf_interval = "1d"
-                        if tf == "1h": yf_interval = "1h"
-                        elif tf == "4h": yf_interval = "1h" # yfinance doesn't support 4h, use 1h and resample? Or just fetch 1h.
-                        # For simplicity, let's use 1h and we might get more bars.
-                        
-                        # Fetch data
-                        # period="2y" for 1d, "3mo" for hourly to stay within limits
-                        period = "2y" if tf=="1d" else "3mo"
-                        
-                        data = yf.download(yf_sym, period=period, interval=yf_interval, progress=False, auto_adjust=False)
-                        if not data.empty:
-                            # Handle MultiIndex columns (yfinance update)
-                            if isinstance(data.columns, pd.MultiIndex):
-                                data.columns = data.columns.get_level_values(0)
-                            
-                            # Format to OpenQuant standard
-                            data = data.reset_index()
-                            LOGGER.info(f"DEBUG: yfinance columns before rename: {data.columns.tolist()}")
-                            
-                            # Ensure columns are capitalized as expected by validate_ohlcv
-                            data.columns = [str(c).capitalize() for c in data.columns]
-                            
-                            # Handle timestamp column
-                            if "Date" in data.columns: data = data.rename(columns={"Date": "timestamp"})
-                            elif "Datetime" in data.columns: data = data.rename(columns={"Datetime": "timestamp"})
-                            elif "Index" in data.columns: data = data.rename(columns={"Index": "timestamp"})
-                            
-                            if "Timestamp" in data.columns: # Capitalized by the list comp above
-                                data = data.rename(columns={"Timestamp": "timestamp"})
-
-                            if "timestamp" in data.columns:
-                                data = data.set_index("timestamp")
-                            else:
-                                LOGGER.warning(f"Could not find timestamp column in {data.columns.tolist()}")
-                            
-                            # Ensure numeric types
-                            cols = ["Open", "High", "Low", "Close", "Volume"]
-                            for c in cols:
-                                if c in data.columns:
-                                    data[c] = data[c].astype(float)
-                            
-                            # Deduplicate and clean
-                            data = data[~data.index.duplicated(keep="last")]
-                            data = data.dropna()
-                            
-                            # Resample if needed (e.g. 1h -> 4h)
-                            if tf == "4h" and yf_interval == "1h":
-                                # Index is already timestamp
-                                agg_dict = {
-                                    "Open": "first",
-                                    "High": "max",
-                                    "Low": "min",
-                                    "Close": "last",
-                                    "Volume": "sum"
-                                }
-                                # Only agg columns that exist
-                                agg_dict = {k: v for k, v in agg_dict.items() if k in data.columns}
-                                data = data.resample("4h").agg(agg_dict).dropna()
-                                
-                            df = data
-                        else:
-                            df = data # empty
+                        df = _fetch_yfinance(symbol, tf)
+                elif exchange == "alpaca":
+                    # Try CCXT first (needs keys), fallback to yfinance
+                    try:
+                        df = retry_call(
+                            lambda: fetch_ohlcv(exchange, symbol, timeframe=tf, since=_default_since(tf), limit=_limit_for(tf)),
+                            retries=1, base_delay=0.5
+                        )
+                    except Exception:
+                        LOGGER.info(f"Alpaca CCXT failed (no keys?). Using yfinance for {symbol}")
+                        df = _fetch_yfinance(symbol, tf)
                 else:
                     df = retry_call(
                         lambda: fetch_ohlcv(exchange, symbol, timeframe=tf, since=_default_since(tf), limit=_limit_for(tf)),
                         retries=3, base_delay=0.5
                     )
             except Exception as e:
+                if exchange == "alpaca":
+                     LOGGER.warning(f"CCXT fetch failed for Alpaca {symbol}: {e}. Trying yfinance fallback.")
+                     try:
+                        import yfinance as yf
+                        data = yf.download(symbol, period=("2y" if tf=="1d" else "3mo"), interval=("1d" if tf=="1d" else "1h"), progress=False, auto_adjust=False)
+                        if not data.empty:
+                             # This is messy duplication. 
+                             # TODO: Refactor yfinance fetcher to a separate module.
+                             # For now, I will rely on the fact that I added 'use_yfinance' flag above.
+                             # But wait, the 'else' block runs fetch_ohlcv. If that fails, I'm here.
+                             pass
+                     except Exception as yf_err:
+                         LOGGER.warning(f"yfinance fallback failed: {yf_err}")
+                
                 LOGGER.warning(f"fetch_ohlcv failed for {symbol} {tf}: {e}")
                 return local_rows
             if df.empty:

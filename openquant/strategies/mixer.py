@@ -5,7 +5,6 @@ Combines multiple strategies into a single portfolio strategy using weighted vot
 import pandas as pd
 import numpy as np
 from typing import List, Dict, Any, Optional
-from openquant.strategies.registry import make_strategy
 
 class StrategyMixer:
     """

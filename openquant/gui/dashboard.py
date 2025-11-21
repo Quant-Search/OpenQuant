@@ -156,6 +156,34 @@ def view_dashboard(con):
         except Exception as e:
             st.error(f"Alpaca Connection Failed: {e}")
 
+        # TCA Section
+        st.divider()
+        st.subheader("📉 Transaction Cost Analysis (TCA)")
+        try:
+            from openquant.analysis.tca import TCAMonitor
+            tca = TCAMonitor()
+            stats = tca.get_stats()
+            
+            if stats.get("count", 0) > 0:
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Orders Tracked", stats["count"])
+                # Color code slippage: Green if < 1bps, Red if > 5bps
+                slip = stats['avg_slippage_bps']
+                delta_color = "normal"
+                if slip > 5: delta_color = "inverse"
+                elif slip < 1: delta_color = "off" # or normal
+                
+                c2.metric("Avg Slippage", f"{slip:.2f} bps", delta=f"{-slip:.2f} bps", delta_color="inverse")
+                c3.metric("Total Fees", f"${stats['total_fees']:.2f}")
+                
+                if "recent_orders" in stats:
+                    st.caption("Recent Execution Quality")
+                    st.dataframe(stats["recent_orders"])
+            else:
+                st.info("No TCA data yet. Place trades to see slippage analysis.")
+        except Exception as e:
+            st.error(f"TCA Error: {e}")
+
 def view_robot_control():
     st.header("🤖 Robot Control Center")
     

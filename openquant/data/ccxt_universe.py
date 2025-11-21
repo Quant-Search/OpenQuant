@@ -12,18 +12,49 @@ from ..utils.rate_limit import get_rate_limiter
 LOGGER = get_logger(__name__)
 
 
-def discover_usdt_symbols(exchange: str = "binance", top_n: int = 30) -> List[str]:
-    """Discover active spot USDT markets and rank by 24h quoteVolume when available.
-    Fallback to market existence if tickers not available.
-    Returns ccxt symbols like "BTC/USDT".
+def discover_symbols(exchange: str = "binance", top_n: int = 30) -> List[str]:
+    """Discover active markets (Crypto, Stocks, Forex) and rank by volume/liquidity.
+    Supports:
+    - Crypto: Binance, Kraken, Coinbase (USDT/USD pairs)
+    - Stocks: Alpaca (SP500/Nasdaq top liquid)
+    - Forex: Oanda (Majors)
     """
+    exchange = exchange.lower()
+    
+    # --- Alpaca (Stocks) ---
+    if exchange == "alpaca":
+        # Return a curated list of liquid stocks for now
+        # In future, fetch from Alpaca API assets endpoint
+        return [
+            "AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "NVDA", "META", "AMD", "NFLX", "INTC",
+            "SPY", "QQQ", "IWM", "GLD", "SLV", "USO", "TLT", "HYG", "LQD", "JPM"
+        ][:top_n]
+
+    # --- Oanda (Forex) ---
+    if exchange == "oanda":
+        return [
+            "EUR/USD", "GBP/USD", "USD/JPY", "USD/CHF", "AUD/USD", "USD/CAD", "NZD/USD",
+            "EUR/GBP", "EUR/JPY", "GBP/JPY"
+        ][:top_n]
+
+    # --- Crypto (CCXT) ---
     ex = _exchange(exchange)
     limiter = get_rate_limiter(exchange, rate_per_sec=6.0, capacity=6)
 
     # Load markets to filter spot/active/USDT
     limiter.acquire()
     markets = retry_call(lambda: ex.load_markets(), retries=3, base_delay=0.5)
-    symbols = [m for m, info in markets.items() if info.get("active") and info.get("quote") == "USDT" and info.get("spot")]
+    
+    # Filter logic
+    symbols = []
+    for m, info in markets.items():
+        if not info.get("active"): continue
+        if not info.get("spot"): continue
+        
+        # Quote currency filter
+        quote = info.get("quote")
+        if quote in ["USDT", "USD", "USDC"]:
+            symbols.append(m)
 
     volumes: Dict[str, float] = {s: 0.0 for s in symbols}
     try:
