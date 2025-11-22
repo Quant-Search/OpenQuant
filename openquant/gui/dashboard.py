@@ -97,17 +97,17 @@ def view_dashboard(con):
     if not q.empty:
         sort_cols = [c for c in ["wfo_mts", "dsr", "sharpe"] if c in q.columns]
         q = q.sort_values(sort_cols, ascending=[False] * len(sort_cols))
-        st.dataframe(q.head(50), use_container_width=True)
+        st.dataframe(q.head(50), width='stretch')
         
         # Charts
         c1, c2 = st.columns(2)
         with c1:
             fig = px.histogram(q, x="sharpe", nbins=20, title="Sharpe Distribution")
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
         with c2:
             if "max_dd" in q.columns:
                 fig2 = px.scatter(q, x="max_dd", y="sharpe", color="symbol", title="Risk vs Reward")
-                st.plotly_chart(fig2, use_container_width=True)
+                st.plotly_chart(fig2, width='stretch')
     else:
         st.warning("No results match filters.")
 
@@ -122,7 +122,7 @@ def view_dashboard(con):
         pos = _query(con, "SELECT * FROM portfolio_positions WHERE ts=(SELECT MAX(ts) FROM portfolio_positions) ORDER BY symbol")
         if not pos.empty:
             st.caption("Current Positions")
-            st.dataframe(pos, use_container_width=True)
+            st.dataframe(pos, width='stretch')
     except Exception:
         st.caption("No portfolio history yet.")
 
@@ -382,7 +382,7 @@ def view_charting(con):
                 
                 # 4. Plot
                 fig = create_interactive_chart(df, symbol=symbol, indicators=indicators, trades=trades)
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width='stretch')
                 
             except Exception as e:
                 st.error(f"Error loading chart: {e}")

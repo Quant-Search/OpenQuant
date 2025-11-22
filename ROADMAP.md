@@ -1,59 +1,81 @@
 # OpenQuant Roadmap
 
-## Phase 1 — Offline Research Engine (MVP)
-- Data loaders: yfinance (equities), ccxt (crypto)
-- Feature engineering: core TA features (SMA/EMA/RSI/MACD/Bollinger)
-- Strategies: rule-based (SMA/EMA/RSI/MACD/Bollinger; momentum & mean reversion)
-- Backtesting: vectorized, fees/slippage, position sizing
-- Evaluation: Sharpe/DSR, MaxDD, CVaR, WFO mean test Sharpe
-- Overfitting controls: walk-forward (WFO), purged CV (initial), deflated Sharpe (DSR)
-- Results DB: DuckDB persistence with best_configs view
-- Reporting: Markdown report, Streamlit dashboard (auto-open) with filters
-- Optimization: Optuna (always on), seeded from DB; adaptive grid narrowing & trial budget; regime-aware tuning (trend vs mean-reversion)
-- Risk: Guardrails (max DD, CVaR, daily loss cap) and concentration limits (per symbol and per (symbol,strategy))
-- Concurrency: bounded parallel fetch and evaluation; rate limiting
-- Validation: data/signals/backtest validators (fail-safe)
-- Tests: unit + integration (no mocks for core paths)
+## Phase 1 — Core Engine (Completed)
+- [x] Data loaders: yfinance (equities), ccxt (crypto), MT5 (forex/cfd)
+- [x] Backtesting: vectorized, fees/slippage, position sizing
+- [x] Evaluation: Sharpe/DSR, MaxDD, CVaR, WFO mean test Sharpe
+- [x] Overfitting controls: walk-forward (WFO), purged CV, deflated Sharpe (DSR)
+- [x] Results DB: DuckDB persistence with best_configs view
+- [x] Reporting: Markdown report, Streamlit dashboard (auto-open) with filters
+- [x] Optimization: Optuna (always on), seeded from DB; adaptive grid narrowing
+- [x] Risk: Guardrails (max DD, CVaR, daily loss cap) and concentration limits
+- [x] Concurrency: bounded parallel fetch and evaluation; rate limiting
+- [x] Validation: data/signals/backtest validators (fail-safe)
 
+## Phase 3 — Paper Trading (Current Focus)
+- [x] PortfolioState and basic order simulator (rebalance by target weights)
+- [x] JSON I/O for paper state (save/load)
+- [x] Script: scripts/paper_apply_allocation.py to apply latest allocation to paper state
+- [x] Persist portfolio ledger to DuckDB (positions, trades, equity) and dashboard view (basic)
+- [x] Execution model: next-bar fills, partial fills (basic fees/slippage implemented)
+- [x] MT5 bridge for paper trading (init/login, symbol select, market orders)
+- [x] Implement stop-loss orders
+- [x] Implement take-profit orders
+- [x] MT5 mirroring (basic): apply allocation weights to MT5 net positions via Python bridge
+- [x] MT5 FX research mode: direct OHLCV + universe discovery from MT5 terminal (EURUSD, GBPUSD, ...)
+- [x] MT5 chart EA: auto-attach viewer EA to chart and visualize strategy signals (via CSV export)
+- [x] Alerts on paper execution anomalies (slippage too high, rejected orders)
 
-### Status (current)
-- Completed: Always-on optimization + WFO, DB persistence, dashboard auto-launch, validators, rate limiter, RSI/MACD/Bollinger, seeding + adaptive grid/trials.
-- Phase 3 (Paper trading) — in progress:
-  - [x] PortfolioState and basic order simulator (rebalance by target weights)
-  - [x] JSON I/O for paper state (save/load)
-  - [x] Script: scripts/paper_apply_allocation.py to apply latest allocation to paper state
-  - [x] Persist portfolio ledger to DuckDB (positions, trades, equity) and dashboard view (basic)
-  - [x] Execution model: next-bar fills, partial fills (basic fees/slippage implemented)
-  - [x] MT5 bridge for paper trading (init/login, symbol select, market orders)
-  - [x] MT5 mirroring (basic): apply allocation weights to MT5 net positions via Python bridge
-  - [x] MT5 FX research mode: direct OHLCV + universe discovery from MT5 terminal (EURUSD, GBPUSD, ...)
-  - [ ] MT5 chart EA: auto-attach viewer EA to chart and visualize strategy signals
+### Next Steps
+- [x] Add daily loss limits
+- [x] Consider adding a trading schedule/time window
+- [x] Add email/notification alerts for significant events (WhatsApp via Webhook)
+- [x] Implement proper logging of all actions
+- [ ] Add a kill switch for emergency stops
 
-  - [ ] Alerts on paper execution anomalies (slippage too high, rejected orders)
+## Phase 2 — Advanced Strategies (Completed)
+- [x] Quantitative Core:
+  - [x] Stationarity: ADF, KPSS tests
+  - [x] Filtering: Kalman Filter (dynamic beta), Hodrick-Prescott (trend separation)
+  - [x] Cointegration: Engle-Granger test, Half-life estimation
+  - [x] Volatility: GARCH(1,1), Garman-Klass
+  - [x] Microstructure: VPIN, Order flow imbalance
+- [x] Genetic Optimization:
+  - [x] Evolution engine (`openquant.optimization`)
+  - [x] CLI runner (`run_genetic_optimization.py`)
+- [x] Pairs Trading / Stat-Arb strategies (`openquant.strategies.quant.stat_arb`)
+- [ ] Strategy selection & ensembling under constraints (exposure, DD, CVaR)
+- [ ] Regression/Classification models (SKLearn integration)
 
-- In progress: Scaling research coverage and stability heuristics.
-- Completed: Scheduler + guardrails (kill switches, daily loss cap, max DD) and concentration limits; regime tagging baseline.
-- Completed: Alerts/notifications (run summaries + optional webhook), exposure caps helper and allocation snapshot per run.
-- Next: MT5 paper trading, exposure/portfolio DB table and dashboard view.
+## Phase 3 — Paper Trading & Operations (Current Focus)
+- [x] PortfolioState and basic order simulator (rebalance by target weights)
+- [x] JSON I/O for paper state (save/load)
+- [x] Script: scripts/paper_apply_allocation.py to apply latest allocation to paper state
+- [x] Persist portfolio ledger to DuckDB (positions, trades, equity) and dashboard view (basic)
+- [x] Execution model: next-bar fills, partial fills (basic fees/slippage implemented)
+- [x] MT5 bridge for paper trading (init/login, symbol select, market orders)
+- [x] Alpaca Broker integration (Linux-ready)
+- [x] Implement stop-loss orders
+- [x] Implement take-profit orders
+- [x] MT5 mirroring (basic): apply allocation weights to MT5 net positions via Python bridge
+- [x] MT5 FX research mode: direct OHLCV + universe discovery from MT5 terminal (EURUSD, GBPUSD, ...)
+- [x] MT5 chart EA: auto-attach viewer EA to chart and visualize strategy signals (via CSV export)
+- [x] Alerts on paper execution anomalies (slippage too high, rejected orders)
 
-## Phase 2 — Broader Strategy Space & Selection
-- Add pairs/stat-arb, regression/classification models (SKLearn)
-- Scheduler/Guardrails: repeat runs (--repeat-mins), risk kill-switches (max DD, daily loss cap, CVaR)
-
-- Hyperparameter search (Optuna)
-- Strategy selection & ensembling under constraints (exposure, DD, CVaR)
-
-## Phase 3 — Paper Trading
-- Broker/exchange connectors (Alpaca, Binance via CCXT)
-- Paper trading router, stateful portfolio, and risk limits
-- Monitoring dashboards & alerts
+### Operational Robustness (Next Steps)
+- [x] Add daily loss limits <!-- id: 5 -->
+- [x] Consider adding a trading schedule/time window <!-- id: 6 -->
+- [x] Add email/notification alerts for significant events (WhatsApp via Webhook)
+- [ ] Implement proper logging of all actions
+- [ ] Add a kill switch for emergency stops
 
 ## Phase 4 — Live Execution (Guarded)
-- Kill switches, circuit breakers, per-asset risk limits
-- Audit logs, persistence, periodic retrain loop (WFO)
+- [ ] Kill switches, circuit breakers, per-asset risk limits
+- [ ] Audit logs, persistence, periodic retrain loop (WFO)
+- [ ] Real-money broker adapters (Alpaca for Linux, MT5 for Windows)
 
-## Phase 5 — Advanced Methods
-- RL baseline for a single asset (SB3)
-- Reality Check/SPA, more robust CVaR estimation
-- MetaTrader 5 bridge (if MT5 terminal available)
-
+## Phase 5 — Advanced Research (Next Frontier)
+- [x] Strategy Selection & Ensembling (Meta-Strategy)
+- [x] Regression/Classification models (SKLearn integration)
+- [ ] RL baseline for a single asset (SB3)
+- [ ] Reality Check/SPA, more robust CVaR estimation

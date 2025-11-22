@@ -21,31 +21,26 @@ LOGGER = get_logger(__name__)
 
 
 def _run_once(top_n: int, dd_limit, cvar_limit, daily_loss_cap, max_per_symbol: int | None, max_per_strategy_per_symbol: int | None, alert_webhook: str | None) -> None:
-    workers = min(8, (os.cpu_count() or 4))
-    # Strategy grids per strategy
+    workers = min(16, (os.cpu_count() or 4))  # Increased parallelization
+    # Focused param grids for proven strategies only
     param_grids = {
-        "sma": {"fast": (10, 20), "slow": (50, 100)},
-        "ema": {"fast": (10, 20), "slow": (50, 100)},
-        "rsi": {"length": (14, 21), "threshold": (50.0, 55.0)},
-        "macd": {"fast": (10, 12), "slow": (20, 26), "signal": (9,)},
-        "bollinger": {"length": (20,), "k": (2.0, 2.5)},
+        "kalman": {"process_noise": [1e-5, 1e-4], "measurement_noise": [1e-3, 1e-2], "threshold": [1.0, 1.5]},
+        "ml": {"lookback": [200, 300, 500], "retrain_interval": [50, 90], "probability_threshold": [0.56, 0.58]},  # Reduced combos
     }
 
     report_path = run_universe(
         exchange="binance",
-        timeframes=("1d","4h","1h","30m","15m"),
+        timeframes=("1d",),  # Focus on 1d first for speed
         top_n=top_n,
-        strategies=("sma","ema","rsi","macd","bollinger"),
+        strategies=("kalman", "ml"),  # Only best performing strategies
         param_grids=param_grids,
-        fast_list=(10,20),  # fallback for sma/ema if param_grids omitted keys
-        slow_list=(50,100),
         fee_bps=2.0,
         weight=1.0,
         out_dir="reports",
-        max_workers=workers,      # per-DF grid
-        fetch_workers=min(4, workers),  # across symbols/timeframes
+        max_workers=workers,
+        fetch_workers=min(8, workers),  # Increased fetch parallelization
         optimize=True,
-        optuna_trials=15,
+        optuna_trials=10,  # Reduced from 15 for 30% speed boost
         run_wfo=True,
         dd_limit=dd_limit,
         cvar_limit=cvar_limit,

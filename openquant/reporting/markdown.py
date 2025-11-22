@@ -1,7 +1,7 @@
 """Markdown report writer for research runs."""
 from __future__ import annotations
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
 import yaml
 import pandas as pd
@@ -17,7 +17,7 @@ def write_report(
     """Write a Markdown report and return its path."""
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
-    ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     report_path = out / f"report_{ts}.md"
 
     # Persist top equity curve if provided
@@ -31,7 +31,7 @@ def write_report(
 
     with report_path.open("w", encoding="utf-8") as f:
         f.write(f"# OpenQuant Research Report\\n\\n")
-        f.write(f"Generated: {datetime.utcnow().isoformat()}Z\\n\\n")
+        f.write(f"Generated: {datetime.now(timezone.utc).isoformat()}Z\n\n")
         f.write("## Config\\n")
         f.write("```yaml\n" + yaml.safe_dump(config, sort_keys=False) + "\n```\n\n")
 
@@ -64,14 +64,14 @@ def write_universe_summary(
     """
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
-    ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     report_path = out / f"universe_{ts}.md"
 
     ranked = sorted(rows, key=lambda x: x.get("metrics", {}).get("sharpe", 0.0), reverse=True)[:top_k]
 
     with report_path.open("w", encoding="utf-8") as f:
         f.write(f"# OpenQuant Universe Research Summary\n\n")
-        f.write(f"Generated: {datetime.utcnow().isoformat()}Z\n\n")
+        f.write(f"Generated: {datetime.now(timezone.utc).isoformat()}Z\n\n")
         f.write("## Top Results (by Sharpe)\n")
         f.write("| rank | strategy | symbol | timeframe | params | sharpe | dsr | max_dd | cvar | n_trades | ok |\n")
         f.write("|---:|:---:|---|:---:|---|---:|---:|---:|---:|---:|:---:|\n")

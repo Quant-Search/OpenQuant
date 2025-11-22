@@ -291,6 +291,16 @@ def apply_allocation_to_mt5(
 
         time.sleep(0.1)
 
+    # Export signals for visualization (auto-detects MT5 path)
+    try:
+        # Convert targets dict back to list format for export if needed, 
+        # but we have the original 'allocation' list which is better.
+        # We might want to annotate it with actual fills? 
+        # For now, just export the target allocation signals as requested.
+        export_signals_to_csv(allocation)
+    except Exception as e:
+        print(f"Signal export failed: {e}")
+
     return targets
 
 
@@ -345,42 +355,83 @@ def modify_position(symbol: str, sl: Optional[float] = None, tp: Optional[float]
     return True
 
 
-def export_signals_to_csv(allocations: List[Dict[str, Any]], path: str = "data/signals.csv") -> None:
+def export_signals_to_csv(allocations: List[Dict[str, Any]], path: str = "data/signals.csv", mt5_data_path: Optional[str] = None) -> None:
     """Export signals to CSV for MT5 EA visualization.
     Format: Symbol,Side,Weight,Timestamp
+    
+    Writes to:
+    1. `path` (default: data/signals.csv)
+    2. `[MT5_DATA_PATH]/MQL5/Files/signals.csv` (if MT5 is available or mt5_data_path provided)
     """
     import csv
     from datetime import datetime
+    import shutil
     
-    # Ensure directory exists
+    # 1. Write to local data/signals.csv
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     
-    # Check if file exists to write header
-    file_exists = p.exists()
-    
-    with open(p, "a", newline="") as f:
-        writer = csv.writer(f)
-        if not file_exists:
-            writer.writerow(["Symbol", "Side", "Weight", "Timestamp"])
-            
-        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    # Prepare rows
+    rows = []
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    for alloc in allocations:
+        sym = str(alloc.get("symbol", ""))
+        weight = float(alloc.get("weight", 0.0))
         
-        for alloc in allocations:
-            sym = str(alloc.get("symbol", ""))
-            weight = float(alloc.get("weight", 0.0))
-            
-            # Determine side based on weight sign
-            side = "BUY" if weight > 0 else "SELL"
-            if weight == 0: side = "FLAT"
-            
-            if sym:
-                writer.writerow([sym, side, f"{weight:.4f}", ts])
+        # Determine side based on weight sign
+        side = "BUY" if weight > 0 else "SELL"
+        if weight == 0: side = "FLAT"
+        
+        if sym:
+            rows.append([sym, side, f"{weight:.4f}", ts])
+
+    # Write local
+    file_exists = p.exists()
+    try:
+        with open(p, "a", newline="") as f:
+            writer = csv.writer(f)
+            if not file_exists:
+                writer.writerow(["Symbol", "Side", "Weight", "Timestamp"])
+            writer.writerows(rows)
+    except Exception as e:
+        print(f"Failed to write local signals CSV: {e}")
+
+    # 2. Write to MT5 MQL5/Files directory
+    target_dir = None
+    if mt5_data_path:
+        target_dir = Path(mt5_data_path) / "MQL5" / "Files"
+    else:
+        # Try to auto-detect via MT5 API
+        mt5 = _lazy_import()
+        if mt5:
+            try:
+                info = mt5.terminal_info()
+                if info and info.data_path:
+                    target_dir = Path(info.data_path) / "MQL5" / "Files"
+            except Exception:
+                pass
     
-    # LOGGER is not imported globally in this file, so we skip logging or import it
-    # Ideally we should have: from ..utils.logging import get_logger; LOGGER = get_logger(__name__)
-    # But to minimize diff, let's just print or skip.
-    # print(f"Exported {len(allocations)} signals to {path}")
+    if target_dir:
+        try:
+            target_dir.mkdir(parents=True, exist_ok=True)
+            target_file = target_dir / "signals.csv"
+            
+            # We overwrite or append? The EA reads the file. 
+            # Usually for visualization of *latest* signals, we might want to append or just keep latest.
+            # The EA reads line by line. Let's append to match local behavior, 
+            # but maybe we should truncate if it gets too big? 
+            # For now, append is safer for history.
+            
+            target_exists = target_file.exists()
+            with open(target_file, "a", newline="") as f:
+                writer = csv.writer(f)
+                if not target_exists:
+                    writer.writerow(["Symbol", "Side", "Weight", "Timestamp"])
+                writer.writerows(rows)
+                
+            # print(f"Exported signals to MT5: {target_file}")
+        except Exception as e:
+            print(f"Failed to write MT5 signals CSV: {e}")
 
 
 def close_all_positions() -> int:

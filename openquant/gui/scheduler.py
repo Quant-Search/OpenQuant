@@ -3,7 +3,7 @@ from __future__ import annotations
 import threading
 import time
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Callable, Dict, Any
 
 from openquant.utils.logging import get_logger
@@ -292,7 +292,7 @@ class RobotScheduler:
                     slippage_bps=float(cfg.get("slippage_bps", 5.0)), 
                     fee_paid=float(fee_paid)
                 ))
-            record_rebalance(con, ts=datetime.utcnow(), fills=fills, state=state, snap=snap)
+            record_rebalance(con, ts=datetime.now(timezone.utc), fills=fills, state=state, snap=snap)
         finally:
             con.close()
             

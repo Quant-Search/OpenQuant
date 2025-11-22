@@ -14,6 +14,15 @@ Key = Tuple[str, str, str, str]
 class PortfolioState:
     cash: float = 100_000.0  # starting paper capital
     holdings: Dict[Key, float] = field(default_factory=dict)  # units (notional weight applied elsewhere)
+    
+    # New fields for risk management
+    avg_price: Dict[Key, float] = field(default_factory=dict)  # weighted average entry price
+    sl_levels: Dict[Key, float] = field(default_factory=dict)  # stop-loss price
+    tp_levels: Dict[Key, float] = field(default_factory=dict)  # take-profit price
+
+    # Daily PnL tracking
+    daily_start_equity: float = 0.0
+    last_reset_date: str = ""  # YYYY-MM-DD
 
     @property
     def positions_value(self) -> float:
@@ -34,6 +43,12 @@ class PortfolioState:
     def update_valuation(self, value: float):
         self._last_positions_value = value
 
+    def check_daily_reset(self, current_date: str, current_equity: float) -> None:
+        """Reset daily start equity if date changed."""
+        if self.last_reset_date != current_date:
+            self.daily_start_equity = current_equity
+            self.last_reset_date = current_date
+
     def position(self, key: Key) -> float:
         """Return units held for a key (0.0 if none)."""
         return float(self.holdings.get(key, 0.0))
@@ -41,4 +56,9 @@ class PortfolioState:
     def set_position(self, key: Key, units: float) -> None:
         """Set units for key (replace)."""
         self.holdings[key] = float(units)
+        # If position is closed (approx 0), clear aux data
+        if abs(units) < 1e-9:
+            self.avg_price.pop(key, None)
+            self.sl_levels.pop(key, None)
+            self.tp_levels.pop(key, None)
 

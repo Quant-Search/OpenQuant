@@ -8,12 +8,14 @@ from .quant.kalman import KalmanMeanReversionStrategy
 from .quant.hurst import HurstExponentStrategy
 from .quant.stat_arb import StatArbStrategy
 from .quant.market_micro import LiquidityProvisionStrategy
+from .ml_strategy import MLStrategy
 
 REGISTRY: Dict[str, Callable[..., Any]] = {
     "kalman": KalmanMeanReversionStrategy,
     "hurst": HurstExponentStrategy,
     "stat_arb": StatArbStrategy,
     "liquidity": LiquidityProvisionStrategy,
+    "ml": MLStrategy,
 }
 
 

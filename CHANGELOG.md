@@ -26,6 +26,13 @@
 
 - Paper trading: Added PortfolioState and simple order simulator; tests added; diagrams/paper_trading_flow.mmd
 
+- **Operational Safety**: Daily Loss Limits and Trading Schedule (Time/Day restrictions).
+- **Notifications**: WhatsApp notification support via Webhook.
+- **Scripts**: `run_paper.sh` for easy Linux execution.
+- **ML Strategy**: Scikit-learn integration with Walk-Forward Optimization and statistical feature engineering.
+- **Structured Logging**: JSON-formatted logs with daily rotation, sensitive data redaction, and `TradeLogger` context manager.
+
+### Changedds --fee-bps/--slippage-bps and --portfolio-db
 - Portfolio ledger: DuckDB tables (portfolio_trades, portfolio_positions, portfolio_equity) and dashboard section
 - Execution realism: simulator supports fee_bps and slippage_bps; paper_apply_allocation CLI adds --fee-bps/--slippage-bps and --portfolio-db
 - MT5: optional bridge stub (no dependency required yet); safe availability checks
@@ -87,10 +94,6 @@
 - Optimization: Seeding from best_configs with adaptive grid-narrowing (±10–30% by stability score) and adaptive Optuna trial budget (8–40 trials)
 - Script: scripts/run_universe_research.py auto-launches Streamlit dashboard after run
 - Risk: Concentration limits available post-run (per symbol, per (symbol,strategy))
-
-
-
-
 
 ## 0.0.1 — Initial scaffolding
 - Repo structure, policies, security, roadmap

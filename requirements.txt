@@ -19,3 +19,5 @@ arch
 filterpy
 scipy
 hurst
+alpaca-py
+scikit-learn

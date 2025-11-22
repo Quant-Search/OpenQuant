@@ -2,33 +2,38 @@
 
 ## Abstract
 
-OpenQuant is an open-source quantitative trading laboratory designed for rigorous financial research, backtesting, and execution. It prioritizes mathematical correctness, reproducibility, and modular architecture over retail trading heuristics. The system integrates advanced time-series analysis, statistical arbitrage models, and genetic optimization algorithms to identify and exploit market inefficiencies.
+OpenQuant is an open-source quantitative trading laboratory designed for rigorous financial research, backtesting, and execution. It prioritizes mathematical correctness, reproducibility, and modular architecture. The system integrates advanced time-series analysis, statistical arbitrage models, and genetic optimization algorithms to identify and exploit market inefficiencies.
+
+## Key Features
+
+*   **Multi-Broker Support**:
+    *   **Paper Trading**: Robust simulation with order management, slippage/fee modeling, and portfolio tracking.
+    *   **Alpaca**: Native integration for Linux/Cloud environments (Live & Paper).
+    *   **MetaTrader 5**: Bridge for Forex/CFD trading (Windows/Wine required).
+*   **Quantitative Core**:
+    *   **Stationarity**: ADF, KPSS tests.
+    *   **Regime Classification**: Hurst Exponent, Trend/Mean-Reversion scoring.
+    *   **Filtering**: Kalman Filters, Hodrick-Prescott.
+    *   **Volatility**: GARCH, Garman-Klass.
+*   **Advanced Strategies**:
+    *   **Ensembling**: Combine multiple strategies via Voting or Weighted Average (`StrategyMixer`).
+    *   **Genetic Optimization**: Evolve strategy parameters using evolutionary algorithms.
+*   **Operational Robustness**:
+    *   **Risk Management**: Stop-Loss, Take-Profit, Daily Loss Limits.
+    *   **Scheduling**: Trading windows and day restrictions.
+    *   **Alerting**: WhatsApp/Webhook notifications for critical events.
 
 ## Architecture
 
-The system is composed of several distinct modules, each responsible for a specific domain of the quantitative pipeline:
+*   **`openquant.quant`**: Mathematical primitives and statistical tests.
+*   **`openquant.research`**: Hypothesis testing engine for large universes.
+*   **`openquant.strategies`**: Strategy implementations and the `StrategyMixer` ensemble engine.
+*   **`openquant.paper`**: Paper trading simulator and state management.
+*   **`openquant.broker`**: Broker adapters (Alpaca, MT5).
 
-*   **`openquant.quant`**: The mathematical core. Implements statistical tests (ADF, KPSS), filters (Kalman, Hodrick-Prescott), and volatility estimators (GARCH, Garman-Klass).
-*   **`openquant.research`**: Orchestrates large-scale hypothesis testing across multiple assets and timeframes.
-*   **`openquant.backtest`**: A vectorized, event-driven backtesting engine designed for high-performance simulation of trading strategies.
-*   **`openquant.optimization`**: A genetic algorithm framework for evolving strategy parameters and logic based on objective fitness functions (e.g., Sharpe Ratio, Sortino Ratio).
-*   **`openquant.gui`**: A Streamlit-based control center for real-time monitoring, visualization, and manual intervention.
-
-## Mathematical Specifications
-
-The system implements the following quantitative models:
-
-1.  **Stationarity Analysis**: Augmented Dickey-Fuller (ADF) and KPSS tests to determine the integration order of time series.
-2.  **Regime Classification**: Hurst Exponent estimation to classify market regimes as persistent (trending), anti-persistent (mean-reverting), or geometric Brownian motion.
-3.  **Dynamic Filtering**: Kalman Filters for recursive estimation of hedge ratios in pairs trading and dynamic beta calculation.
-4.  **Trend Separation**: Hodrick-Prescott filter for decomposing time series into trend and cyclical components.
-5.  **Volatility Modeling**: GARCH(1,1) and Garman-Klass estimators for precise volatility forecasting and risk normalization.
-6.  **Market Microstructure**: VPIN (Volume-Synchronized Probability of Informed Trading) and order flow imbalance metrics.
-
-## Installation and Configuration
+## Installation
 
 ### Prerequisites
-
 *   Python 3.10+
 *   Linux (Recommended) or Windows
 
@@ -42,41 +47,44 @@ The system implements the following quantitative models:
     ```
 
 2.  **Configuration**:
-    Copy the example configuration file and populate it with necessary credentials (Alpaca, MetaTrader 5).
+    Copy the example configuration and set your credentials (Alpaca/MT5).
     ```bash
     cp .env.example .env
     ```
 
 ## Usage
 
-### Research and Backtesting
+### Paper Trading (Linux/Safe Mode)
+Run the paper trading simulation with the latest allocation:
+```bash
+./run_paper.sh
+```
 
-To execute a research cycle on a specific asset using the command-line interface:
-
+### Research & Backtesting
+Run a research cycle on a specific asset:
 ```bash
 python3 scripts/run_robot_cli.py --symbols BTC/USD --strategy stat_arb
 ```
 
-### Genetic Optimization
-
-To initiate the evolutionary optimization process for strategy parameters:
-
-```bash
-python3 scripts/run_genetic_optimization.py --symbol EURUSD --pop-size 50 --generations 20
+### Strategy Ensembling
+Combine strategies using the `StrategyMixer` in your research config:
+```python
+# Example config snippet
+strategy="mixer",
+params={
+    "sub_strategies": ["kalman", "hurst"],
+    "weights": [0.6, 0.4]
+}
 ```
 
-### Dashboard
-
-To launch the graphical user interface for monitoring and analysis:
-
+### Notifications
+Test WhatsApp notifications:
 ```bash
-python3 scripts/run_dashboard.py
+python3 scripts/test_whatsapp.py --url "YOUR_WEBHOOK_URL"
 ```
 
 ## Deployment
+For cloud deployment, refer to `CLOUD_DEPLOY.md`.
 
-For deployment on cloud infrastructure (e.g., Oracle Cloud, AWS), refer to `CLOUD_DEPLOY.md`. The system is optimized for headless execution in Linux environments.
-
-## Security and Policies
-
-Refer to `SECURITY.md` for vulnerability reporting and `POLICIES.md` for contribution guidelines. This software is provided for educational and research purposes. Users are responsible for all financial risks associated with its use.
+## Security & Policies
+Refer to `SECURITY.md` and `POLICIES.md`.
