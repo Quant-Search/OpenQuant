@@ -11,6 +11,7 @@ import numpy as np
 
 from openquant.utils.logging import get_logger
 from openquant.utils.alerts import send_alert
+from openquant.risk.kill_switch import KILL_SWITCH
 
 LOGGER = get_logger(__name__)
 
@@ -73,6 +74,11 @@ class PortfolioGuard:
         """Call at the start of every cycle to check limits.
         Returns: (is_safe, reason)
         """
+        # 0. Kill Switch Check
+        if KILL_SWITCH.is_active():
+            msg = "KILL SWITCH ACTIVE. Robot Stopped."
+            return False, msg
+
         # 1. Daily Reset
         today = date.today()
         if today > self.current_date:

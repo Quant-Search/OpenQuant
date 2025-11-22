@@ -73,6 +73,23 @@ class MLStrategy(BaseStrategy):
         bar_imb = ((data['Close'] - data['Open']) / range_hl) * data['Volume']
         features['vol_imb'] = bar_imb.rolling(5).mean().shift(1)
         
+        # 5. RSI (Relative Strength Index)
+        delta = data['Close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+        rs = gain / loss
+        features['rsi'] = (100 - (100 / (1 + rs))).shift(1)
+
+        # 6. ATR (Average True Range) - Volatility
+        high_low = data['High'] - data['Low']
+        high_close = (data['High'] - data['Close'].shift()).abs()
+        low_close = (data['Low'] - data['Close'].shift()).abs()
+        tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+        features['atr_norm'] = (tr.rolling(14).mean() / data['Close']).shift(1)
+
+        # 7. Volume Ratio
+        features['vol_ratio'] = (data['Volume'] / data['Volume'].rolling(20).mean()).shift(1)
+
         return features.dropna()
 
     def generate_signals(self, df: pd.DataFrame) -> pd.Series:
