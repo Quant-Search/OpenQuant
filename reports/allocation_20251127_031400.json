@@ -1,0 +1,97 @@
+{
+  "run_id": "20251127_031400",
+  "allocations": [
+    {
+      "exchange": "mt5",
+      "symbol": "USDJPY",
+      "timeframe": "4h",
+      "strategy": "liquidity",
+      "params": {
+        "vpin_threshold": 0.2,
+        "lookback": 10
+      },
+      "weight": 0.05
+    },
+    {
+      "exchange": "mt5",
+      "symbol": "USDJPY",
+      "timeframe": "4h",
+      "strategy": "kalman",
+      "params": {
+        "process_noise": 1e-05,
+        "measurement_noise": 0.01,
+        "threshold": 1.5
+      },
+      "weight": 0.05
+    },
+    {
+      "exchange": "mt5",
+      "symbol": "USDJPY",
+      "timeframe": "1d",
+      "strategy": "kalman",
+      "params": {
+        "process_noise": 0.0001,
+        "measurement_noise": 0.001,
+        "threshold": 1.5
+      },
+      "weight": 0.05
+    },
+    {
+      "exchange": "mt5",
+      "symbol": "EURUSD",
+      "timeframe": "1d",
+      "strategy": "liquidity",
+      "params": {
+        "vpin_threshold": 0.3,
+        "lookback": 10
+      },
+      "weight": 0.050372168980592116
+    },
+    {
+      "exchange": "mt5",
+      "symbol": "USDJPY",
+      "timeframe": "1d",
+      "strategy": "liquidity",
+      "params": {
+        "vpin_threshold": 0.4,
+        "lookback": 20
+      },
+      "weight": 0.04999999999999999
+    },
+    {
+      "exchange": "mt5",
+      "symbol": "EURUSD",
+      "timeframe": "4h",
+      "strategy": "stat_arb",
+      "params": {
+        "entry_z": 2.5,
+        "exit_z": 0.5
+      },
+      "weight": 0.050372168980592116
+    },
+    {
+      "exchange": "mt5",
+      "symbol": "EURUSD",
+      "timeframe": "1d",
+      "strategy": "kalman",
+      "params": {
+        "process_noise": 0.0001,
+        "measurement_noise": 0.001,
+        "threshold": 1.0
+      },
+      "weight": 0.050372168980592116
+    },
+    {
+      "exchange": "mt5",
+      "symbol": "EURUSD",
+      "timeframe": "1d",
+      "strategy": "hurst",
+      "params": {
+        "lookback": 100,
+        "trend_threshold": 0.55,
+        "mr_threshold": 0.45
+      },
+      "weight": 0.04888349305822365
+    }
+  ]
+}

@@ -435,8 +435,17 @@ class RobotScheduler:
                     from openquant.paper import mt5_bridge
                     mt5_sym = mt5_bridge.map_symbol(sym)
                     
+                    # Get symbol info for contract size
+                    info = broker.mt5.symbol_info(mt5_sym)
+                    if not info:
+                        LOGGER.warning(f"MT5: Cannot get symbol info for {mt5_sym}, skipping.")
+                        continue
+                    
+                    # Contract size (e.g., 100,000 for Forex)
+                    contract_size = float(getattr(info, "trade_contract_size", 100000.0) or 100000.0)
+                    
                     current_qty = float(current_pos.get(mt5_sym, 0.0))
-                    current_val = current_qty * price
+                    current_val = current_qty * price * contract_size
                     target_val = equity * target_weight
                     
                     delta_val = target_val - current_val
@@ -445,16 +454,19 @@ class RobotScheduler:
                     if abs(delta_val) < 10.0:
                         continue
                         
-                    delta_qty = delta_val / price
-                    side = "buy" if delta_qty > 0 else "sell"
-                    qty_abs = abs(delta_qty)
+                    # Calculate lots needed
+                    # delta_val = lots * price * contract_size
+                    # lots = delta_val / (price * contract_size)
+                    delta_lots = delta_val / (price * contract_size)
+                    side = "buy" if delta_lots > 0 else "sell"
+                    lots_abs = abs(delta_lots)
                     
-                    LOGGER.info(f"MT5 Order: {side.upper()} {qty_abs:.4f} {sym} (Delta: ${delta_val:.2f})")
+                    LOGGER.info(f"MT5 Order: {side.upper()} {lots_abs:.4f} lots {mt5_sym} (Delta: ${delta_val:.2f})")
                     
                     try:
                         broker.place_order(
                             symbol=sym, # Broker handles mapping
-                            quantity=qty_abs,
+                            quantity=lots_abs,
                             side=side,
                             order_type="market"
                         )
