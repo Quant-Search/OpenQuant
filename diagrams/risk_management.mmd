@@ -1,0 +1,98 @@
+%% OpenQuant Risk Management Architecture (Updated)
+%% Complete robot architecture with GUI, pre-flight checks, and execution
+
+flowchart TB
+    subgraph GUI["Single GUI Dashboard"]
+        RC["Robot Control<br/>(Start/Stop/Config)"]
+        RM["Risk Monitor<br/>(Status Display)"]
+        AV["Audit Viewer<br/>(Event History)"]
+    end
+
+    subgraph PreFlight["Pre-Flight Checks"]
+        KS["Kill Switch<br/>(data/STOP file)"]
+        CB["Circuit Breaker<br/>(Daily Loss/Drawdown/Volatility)"]
+        MH["Market Hours<br/>(Forex/Crypto/Stocks)"]
+    end
+
+    subgraph Risk["Risk Management Layer"]
+        AL["Asset Limits<br/>(Per-Symbol Caps)"]
+        PG["Portfolio Guard<br/>(CVaR/Exposure)"]
+        VS["Volatility Sizing<br/>(Inverse Vol Weighting)"]
+    end
+
+    subgraph Execution["Execution Layer"]
+        SIM["Paper Simulator"]
+        MT5["MT5 Bridge"]
+        ALP["Alpaca Broker"]
+        CR["Connection Retry<br/>(Exponential Backoff)"]
+    end
+
+    subgraph Audit["Audit Layer"]
+        AT["Audit Trail DB<br/>(DuckDB)"]
+    end
+
+    subgraph Research["Research Layer"]
+        RS["Retrain Scheduler<br/>(Daily/Weekly/Monthly)"]
+        UR["Universe Runner<br/>(WFO Pipeline)"]
+    end
+
+    %% GUI controls
+    RC --> KS
+    RC --> CB
+    RM --> KS
+    RM --> CB
+    RM --> MH
+    AV --> AT
+
+    %% Pre-flight blocks execution
+    KS -->|Blocks if active| SIM
+    KS -->|Blocks if active| MT5
+    KS -->|Blocks if active| ALP
+    CB -->|Trips on breach| SIM
+    CB -->|Trips on breach| MT5
+    CB -->|Trips on breach| ALP
+    MH -->|Blocks if closed| SIM
+    MH -->|Blocks if closed| MT5
+    MH -->|Blocks if closed| ALP
+
+    %% Risk layer validates
+    AL --> SIM
+    AL --> MT5
+    AL --> ALP
+    VS --> SIM
+    VS --> MT5
+    VS --> ALP
+    PG --> SIM
+    PG --> MT5
+    PG --> ALP
+
+    %% Connection retry
+    CR --> MT5
+    CR --> ALP
+
+    %% Execution logs to audit
+    SIM --> AT
+    MT5 --> AT
+    ALP --> AT
+
+    %% Execution updates circuit breaker
+    SIM --> CB
+    MT5 --> CB
+    ALP --> CB
+
+    %% Research layer
+    RS --> UR
+    UR --> AT
+
+    style KS fill:#ff6b6b,color:#fff
+    style CB fill:#ffa94d,color:#fff
+    style MH fill:#ffd43b,color:#000
+    style AL fill:#69db7c,color:#fff
+    style VS fill:#38d9a9,color:#fff
+    style PG fill:#20c997,color:#fff
+    style AT fill:#4dabf7,color:#fff
+    style RS fill:#da77f2,color:#fff
+    style RC fill:#748ffc,color:#fff
+    style RM fill:#748ffc,color:#fff
+    style AV fill:#748ffc,color:#fff
+

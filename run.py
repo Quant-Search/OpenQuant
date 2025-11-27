@@ -7,6 +7,9 @@ import os
 import sys
 import subprocess
 from pathlib import Path
+from dotenv import load_dotenv
+
+load_dotenv()
 
 def main():
     project_root = Path(__file__).parent

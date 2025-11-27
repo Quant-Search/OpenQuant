@@ -496,7 +496,7 @@ def run_universe(
                         for row in (fut.result() or []):
                             rows.append(row)
                     except Exception as e:
-                        LOGGER.error(f"Batch processing error: {e}")
+                        LOGGER.error(f"Batch processing error: {e}", exc_info=True)
         else:
             for s, tf in batch:
                 try:

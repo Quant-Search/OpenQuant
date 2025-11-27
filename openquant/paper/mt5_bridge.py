@@ -12,6 +12,9 @@ from pathlib import Path
 import json
 import time
 
+from ..risk.kill_switch import KILL_SWITCH
+from ..risk.circuit_breaker import CIRCUIT_BREAKER
+
 _MT5 = None
 
 
@@ -194,7 +197,20 @@ def apply_allocation_to_mt5(
 
     We compute volume lots so that notional ≈ weight * equity using contract_size and price.
     Returns dict with {symbol: target_volume_lots} for visibility.
+
+    SAFETY: Checks kill switch and circuit breaker before executing.
+    If either is active, raises RuntimeError.
     """
+    # KILL SWITCH CHECK - Critical safety mechanism
+    # If kill switch is active, refuse to execute any orders
+    if KILL_SWITCH.is_active():
+        raise RuntimeError("KILL SWITCH ACTIVE - Trading halted. Remove data/STOP file to resume.")
+
+    # CIRCUIT BREAKER CHECK - Automatic risk-based halt
+    # If circuit breaker is tripped, refuse to execute any orders
+    if CIRCUIT_BREAKER.is_tripped():
+        raise RuntimeError("CIRCUIT BREAKER TRIPPED - Trading halted. Check risk thresholds.")
+
     mt5 = _lazy_import()
     if not mt5:
         raise RuntimeError("MetaTrader5 module not available")

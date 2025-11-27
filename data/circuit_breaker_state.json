@@ -1,0 +1,10 @@
+{
+  "current_date": "2025-11-27",
+  "start_of_day_equity": -2.886837390945222e-05,
+  "peak_equity": 0.0,
+  "daily_loss_breaker_tripped": false,
+  "drawdown_breaker_tripped": false,
+  "volatility_breaker_tripped": false,
+  "last_trip_time": "",
+  "last_reset_time": "2025-11-27T02:23:40.320278"
+}

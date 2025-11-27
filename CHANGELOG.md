@@ -1,4 +1,73 @@
 ## [Unreleased]
+
+### Single GUI Dashboard (NEW)
+- **Consolidated Control Center**: All robot controls in one Streamlit dashboard
+- **Risk Monitor Page**: Real-time view of kill switch, circuit breaker, market hours status
+- **Emergency Controls**: One-click kill switch activation/deactivation
+- **Audit Trail Viewer**: Recent trading events displayed in dashboard
+- **Status Indicators**: Sidebar shows robot state (Running/Stopped/Risk Alert)
+
+### Execution Improvements (NEW)
+- **Volatility-Adjusted Position Sizing**: Inverse volatility weighting in `openquant/risk/exposure.py`
+  - Uses max drawdown as risk proxy when returns unavailable
+  - Clamps volatility factors to 0.5x-2.0x of base weight
+- **Market Hours Check**: New `openquant/risk/market_hours.py` module
+  - Forex: Sun 17:00 - Fri 17:00 EST (24/5)
+  - Crypto: 24/7
+  - US Stocks: 9:30-16:00 EST (Mon-Fri)
+  - Extended Hours: 4:00-20:00 EST
+- **Connection Retry Logic**: Enhanced `openquant/utils/retry.py`
+  - Exponential backoff with jitter
+  - Pre-configured handlers: MT5_RETRY, ALPACA_RETRY, CCXT_RETRY
+- **Live Circuit Breaker Updates**: Circuit breaker updated after every execution cycle
+
+### Risk Management Enhancements
+- **Kill Switch Integration**: Added kill switch checks to all execution paths (simulator, MT5 bridge, Alpaca broker)
+- **Circuit Breakers**: New `openquant/risk/circuit_breaker.py` module with:
+  - Daily loss limit (default 2%)
+  - Drawdown limit (default 10%)
+  - Volatility limit (default 5%)
+  - State persistence to JSON
+  - Automatic daily reset
+- **Per-Asset Risk Limits**: New `openquant/risk/asset_limits.py` module with:
+  - Max notional per asset
+  - Max percentage of portfolio per asset
+  - Max positions per asset
+  - Max leverage per asset
+  - JSON configuration support
+- **Audit Trail Database**: New `openquant/storage/audit_trail.py` module with:
+  - Persistent DuckDB logging of all trading decisions
+  - Event types: SIGNAL, ORDER_DECISION, ORDER_EXECUTION, ORDER_REJECTED, KILL_SWITCH, CIRCUIT_BREAKER, LIMIT_VIOLATION, SYSTEM_START, SYSTEM_STOP, ERROR, WARNING
+  - Query API with filters by event type, symbol, strategy, time range
+- **Periodic Retrain Scheduler**: New `openquant/research/retrain_scheduler.py` module with:
+  - Configurable frequency (daily, weekly, biweekly, monthly)
+  - State persistence for tracking last retrain time
+  - Daemon mode for background operation
+  - Integration with universe_runner for full WFO pipeline
+
+### Cleanup: Pure Quantitative Focus
+- **Removed retail/technical analysis code**: Deleted SMA, EMA, RSI, MACD, Bollinger indicators and strategies
+- **Deleted files**: `openquant/features/ta_features.py`, `openquant/strategies/wrappers/pandas_ta.py`, `openquant/research/runner.py`
+- **Deleted tests**: `tests/test_ema_strategy.py`, `tests/test_sma_strategy.py`, `tests/test_rsi_macd_bollinger.py`, `tests/test_research_offline.py`
+- **Updated registry**: Removed pandas_ta wrapper imports from `openquant/strategies/registry.py`
+- **Philosophy**: Robot now focuses purely on mathematical models, statistics, probability (Kalman, cointegration, GARCH, Hurst, stat-arb)
+
+### Bug Fixes
+- **test_tca**: Fixed module-level duckdb mock in `tests/test_schedule.py` that was polluting subsequent tests
+- **test_tca**: Made row unpacking more robust in `openquant/analysis/tca.py` (explicit indexing instead of tuple unpacking)
+- **test_allocation_respects_caps**: Fixed correlation check in `openquant/risk/exposure.py` to exclude same symbol
+- **test_optuna_best_params**: Fixed categorical sampling for small grids in `openquant/optimization/optuna_search.py`
+- **test_results_db_best_view**: Enabled `_refresh_best_view()` call in `openquant/storage/results_db.py`
+- **test_view_charting**: Fixed ccxt mock in `tests/test_dashboard_components.py` using `sys.modules` patch
+- **test_appimage_execution**: Added platform check for Windows in `tests/test_appimage_run.py`
+
+### Test Results
+- 99 tests passing, 2 skipped (AppImage tests on Windows)
+- All 7 previously failing tests now fixed
+- 7 new tests for new modules (audit trail, retrain scheduler, circuit breaker)
+
+---
+
 - MT5 alerts: Added execution anomaly detection (rejected orders, high slippage) to mt5_bridge with alerting via openquant.utils.alerts
 - Risk Management: Added SL/TP support to MT5 bridge (apply_allocation_to_mt5 now accepts sl/tp in allocation entries)
 - Risk Management: Added modify_position() to mt5_bridge for updating SL/TP on existing positions

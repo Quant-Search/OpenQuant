@@ -6,10 +6,12 @@ rebalance immediately at a given price snapshot (no slippage model yet).
 
 Later we can add: next-bar-open fills, slippage, fees, partial fills.
 """
-from typing import Dict, List, Tuple, Iterable
+from typing import Dict, List, Tuple, Iterable, Optional
 from dataclasses import dataclass, field
 
 from .state import PortfolioState, Key
+from ..risk.kill_switch import KILL_SWITCH
+from ..risk.circuit_breaker import CIRCUIT_BREAKER
 
 
 @dataclass
@@ -72,21 +74,34 @@ def execute_orders(
     """Execute orders and update state.cash and holdings.
 
     Supports next-bar fills (use next_prices if available) and partial fills (max_fill_fraction < 1.0).
-    
+
     Orders tuple now expects: (key, delta_units, ref_price, sl, tp)
     If sl/tp are None, they are ignored (or kept if existing).
-    
+
     Returns (summary, fills) where fills are (key, delta_units, exec_price, fee_paid).
+
+    SAFETY: Checks kill switch and circuit breaker before executing.
+    If either is active, returns empty fills.
     """
+    # KILL SWITCH CHECK - Critical safety mechanism
+    # If kill switch is active, refuse to execute any orders
+    if KILL_SWITCH.is_active():
+        return {"orders": 0, "turnover": 0.0, "kill_switch_blocked": True}, []
+
+    # CIRCUIT BREAKER CHECK - Automatic risk-based halt
+    # If circuit breaker is tripped, refuse to execute any orders
+    if CIRCUIT_BREAKER.is_tripped():
+        return {"orders": 0, "turnover": 0.0, "circuit_breaker_blocked": True}, []
+
     orders_count = 0
     turnover = 0.0
     fills: List[Tuple[Key, float, float, float]] = []
-    
+
     # Normalize input: if orders is list of 3-tuples, pad with None
-    # This is a bit hacky to maintain backward compat if caller passes 3-tuples, 
+    # This is a bit hacky to maintain backward compat if caller passes 3-tuples,
     # but better to enforce 5-tuples or check len.
     # Let's assume caller adapts or we check.
-    
+
     for item in orders:
         if len(item) == 3:
             k, delta_u, ref_price = item # type: ignore

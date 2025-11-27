@@ -53,29 +53,47 @@ def propose_portfolio_weights(
     # candidates = filter_correlated_candidates(candidates, threshold=0.8)
     
     # Calculate volatility adjustments if enabled
+    # Uses inverse volatility: lower volatility assets get higher weights
+    # This implements risk parity-like allocation
     vol_factors = {}
     if volatility_adjusted:
-        # Calculate inverse volatility factors
+        # Step 1: Collect volatility for each candidate
         for idx, row in candidates:
+            symbol = row.get("symbol")
+            if not symbol:
+                continue
+
             metrics = row.get("metrics") or {}
+
+            # Try multiple sources for volatility:
+            # 1. Direct max_dd (drawdown as proxy for risk)
+            # 2. Returns std if available
+            # 3. Default to 1.0
+            max_dd = metrics.get("max_dd")
             returns = metrics.get("returns")
-            if returns is not None and hasattr(returns, 'std'):
-                vol = returns.std()
-                # Inverse volatility: lower vol → higher weight
-                # Store by symbol for easier lookup later
-                symbol = row.get("symbol")
-                if symbol:
-                    vol_factors[symbol] = 1.0 / max(vol, 1e-6) if vol > 0 else 1.0
+
+            vol = None
+            if max_dd is not None and max_dd > 0:
+                # Use max drawdown as risk proxy (higher DD = higher risk)
+                vol = float(max_dd)
+            elif returns is not None and hasattr(returns, 'std'):
+                vol = float(returns.std())
+
+            if vol is not None and vol > 0:
+                # Inverse volatility: lower vol/dd -> higher weight
+                vol_factors[symbol] = 1.0 / max(vol, 0.01)
             else:
-                symbol = row.get("symbol")
-                if symbol:
-                    vol_factors[symbol] = 1.0
-        
-        # Normalize vol_factors
+                vol_factors[symbol] = 1.0
+
+        # Step 2: Normalize to median = 1.0 for stability
         if vol_factors:
-            median_factor = sorted(vol_factors.values())[len(vol_factors) // 2]
-            for idx in vol_factors:
-                vol_factors[idx] /= median_factor
+            sorted_factors = sorted(vol_factors.values())
+            median_factor = sorted_factors[len(sorted_factors) // 2]
+            if median_factor > 0:
+                for sym in vol_factors:
+                    vol_factors[sym] /= median_factor
+                    # Clamp to prevent extreme weights (0.5x to 2x of base)
+                    vol_factors[sym] = max(0.5, min(2.0, vol_factors[sym]))
 
     assigned_total = 0.0
     per_symbol: Dict[str, float] = {}
@@ -94,10 +112,12 @@ def propose_portfolio_weights(
         sym = row.get("symbol")
         if not isinstance(sym, str):
             continue
-            
-        # Check Correlation with *newly proposed* symbols in this batch
-        # (We don't have access to existing holdings here easily without changing signature)
-        if check_portfolio_correlation(sym, list(per_symbol.keys()), threshold=0.8):
+
+        # Check Correlation with *other* symbols in this batch (not the same symbol)
+        # We allow multiple entries for the same symbol (different strategies)
+        # as long as per-symbol cap is respected
+        other_symbols = [s for s in per_symbol.keys() if s != sym]
+        if check_portfolio_correlation(sym, other_symbols, threshold=0.8):
             continue
             
         sym_used = per_symbol.get(sym, 0.0)

@@ -299,9 +299,106 @@ def view_robot_control():
         time.sleep(2)
         st.rerun()
 
+def view_risk_monitor():
+    """Risk monitoring and emergency controls."""
+    st.header("Risk Monitor")
+
+    # Import risk modules
+    from openquant.risk.kill_switch import KILL_SWITCH
+    from openquant.risk.circuit_breaker import CIRCUIT_BREAKER
+    from openquant.risk.market_hours import MarketHours, MarketType
+
+    # Status Cards
+    col1, col2, col3 = st.columns(3)
+
+    # Kill Switch Status
+    with col1:
+        kill_active = KILL_SWITCH.is_active()
+        st.metric(
+            "Kill Switch",
+            "ACTIVE" if kill_active else "OK",
+            delta=None,
+            delta_color="inverse" if kill_active else "normal"
+        )
+        if kill_active:
+            st.error("Trading halted. Remove data/STOP to resume.")
+            if st.button("Deactivate Kill Switch"):
+                try:
+                    Path("data/STOP").unlink()
+                    st.success("Kill switch deactivated")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Failed: {e}")
+        else:
+            if st.button("Activate Kill Switch", type="primary"):
+                Path("data").mkdir(exist_ok=True)
+                Path("data/STOP").touch()
+                st.warning("Kill switch activated!")
+                st.rerun()
+
+    # Circuit Breaker Status
+    with col2:
+        cb_status = CIRCUIT_BREAKER.get_status()
+        cb_tripped = cb_status["is_tripped"]
+        st.metric(
+            "Circuit Breaker",
+            "TRIPPED" if cb_tripped else "OK",
+            delta=None,
+            delta_color="inverse" if cb_tripped else "normal"
+        )
+        if cb_tripped:
+            st.error("Trading halted due to risk limits.")
+            if st.button("Reset Circuit Breaker"):
+                CIRCUIT_BREAKER.reset()
+                st.success("Circuit breaker reset")
+                st.rerun()
+
+    # Market Hours
+    with col3:
+        # Default to forex for display
+        mh = MarketHours(MarketType.FOREX)
+        is_open = mh.is_open()
+        st.metric(
+            "Forex Market",
+            "OPEN" if is_open else "CLOSED",
+            delta=None
+        )
+        if not is_open:
+            next_open = mh.next_open()
+            st.info(f"Opens: {next_open.strftime('%Y-%m-%d %H:%M EST')}")
+
+    st.divider()
+
+    # Circuit Breaker Details
+    st.subheader("Circuit Breaker Thresholds")
+    col_a, col_b, col_c = st.columns(3)
+    col_a.metric("Daily Loss Limit", f"{CIRCUIT_BREAKER.daily_loss_limit:.1%}")
+    col_b.metric("Drawdown Limit", f"{CIRCUIT_BREAKER.drawdown_limit:.1%}")
+    col_c.metric("Volatility Limit", f"{CIRCUIT_BREAKER.volatility_limit:.1%}")
+
+    # State Info
+    with st.expander("Circuit Breaker State"):
+        st.json(cb_status)
+
+    st.divider()
+
+    # Audit Trail
+    st.subheader("Audit Trail (Recent Events)")
+    try:
+        from openquant.storage.audit_trail import AUDIT_TRAIL
+        events = AUDIT_TRAIL.query(limit=20)
+        if events:
+            audit_df = pd.DataFrame(events)
+            st.dataframe(audit_df, use_container_width=True)
+        else:
+            st.info("No audit events yet.")
+    except Exception as e:
+        st.warning(f"Could not load audit trail: {e}")
+
+
 def view_settings():
-    st.header("⚙️ Settings")
-    
+    st.header("Settings")
+
     # Risk Configuration
     st.subheader("Risk Management")
     if "risk_config" not in st.session_state:
@@ -311,26 +408,46 @@ def view_settings():
             "cvar_limit": 0.08,
             "max_exposure_per_symbol": 0.20
         }
-    
+
     rc = st.session_state.risk_config
-    
+
     with st.form("risk_form"):
         c1, c2 = st.columns(2)
         rc["dd_limit"] = c1.number_input("Max Drawdown Limit (0.2 = 20%)", 0.01, 1.0, rc["dd_limit"], 0.01)
         rc["daily_loss_cap"] = c2.number_input("Daily Loss Cap (0.05 = 5%)", 0.01, 1.0, rc["daily_loss_cap"], 0.01)
         rc["cvar_limit"] = c1.number_input("CVaR Limit (95%)", 0.01, 1.0, rc["cvar_limit"], 0.01)
         rc["max_exposure_per_symbol"] = c2.number_input("Max Exposure per Symbol", 0.01, 1.0, rc["max_exposure_per_symbol"], 0.01)
-        
+
         if st.form_submit_button("Save Risk Settings"):
-            # In a real app, save to a config file. For now, we update session state and notify scheduler.
             st.success("Risk settings updated (Session only)")
-            # Pass these to scheduler if running
             SCHEDULER.run_config.update(rc)
+
+    st.divider()
+
+    # Circuit Breaker Configuration
+    st.subheader("Circuit Breaker Thresholds")
+    from openquant.risk.circuit_breaker import CIRCUIT_BREAKER
+
+    with st.form("circuit_breaker_form"):
+        cb1, cb2, cb3 = st.columns(3)
+        new_daily = cb1.number_input("Daily Loss Limit", 0.01, 0.5, CIRCUIT_BREAKER.daily_loss_limit, 0.01)
+        new_dd = cb2.number_input("Drawdown Limit", 0.01, 0.5, CIRCUIT_BREAKER.drawdown_limit, 0.01)
+        new_vol = cb3.number_input("Volatility Limit", 0.01, 0.5, CIRCUIT_BREAKER.volatility_limit, 0.01)
+
+        if st.form_submit_button("Update Thresholds"):
+            CIRCUIT_BREAKER.daily_loss_limit = new_daily
+            CIRCUIT_BREAKER.drawdown_limit = new_dd
+            CIRCUIT_BREAKER.volatility_limit = new_vol
+            CIRCUIT_BREAKER._save_state()
+            st.success("Circuit breaker thresholds updated")
 
     st.divider()
     st.subheader("Environment Variables")
     with st.expander("View Environment"):
-        st.json(dict(os.environ))
+        # Filter sensitive keys
+        safe_env = {k: ("***" if any(s in k.lower() for s in ["password", "secret", "key", "token"]) else v)
+                    for k, v in os.environ.items()}
+        st.json(safe_env)
 
 def view_charting(con):
     st.header("📈 Interactive Charting")
@@ -391,23 +508,51 @@ def view_charting(con):
 
 def main():
     st.set_page_config(page_title="OpenQuant Robot", layout="wide", page_icon="🤖")
-    
+
+    # Import risk modules for status display
+    from openquant.risk.kill_switch import KILL_SWITCH
+    from openquant.risk.circuit_breaker import CIRCUIT_BREAKER
+
     # Sidebar Navigation
     with st.sidebar:
         st.title("OpenQuant")
-        page = st.radio("Navigation", ["Dashboard", "Charting", "Robot Control", "Settings"])
+
+        # Status indicators at top of sidebar
+        kill_active = KILL_SWITCH.is_active()
+        cb_tripped = CIRCUIT_BREAKER.is_tripped()
+
+        if kill_active:
+            st.error("KILL SWITCH ACTIVE")
+        elif cb_tripped:
+            st.warning("CIRCUIT BREAKER TRIPPED")
+        elif SCHEDULER.is_running:
+            st.success("Robot Running")
+        else:
+            st.info("Robot Stopped")
+
+        st.divider()
+
+        # Navigation
+        page = st.radio(
+            "Navigation",
+            ["Robot Control", "Risk Monitor", "Dashboard", "Charting", "Settings"],
+            index=0  # Default to Robot Control
+        )
+
         st.divider()
         st.caption(f"OS: {sys.platform}")
         st.caption(f"Time: {datetime.now().strftime('%H:%M')}")
 
     con = _connect(DB_PATH)
-    
-    if page == "Dashboard":
+
+    if page == "Robot Control":
+        view_robot_control()
+    elif page == "Risk Monitor":
+        view_risk_monitor()
+    elif page == "Dashboard":
         view_dashboard(con)
     elif page == "Charting":
         view_charting(con)
-    elif page == "Robot Control":
-        view_robot_control()
     elif page == "Settings":
         view_settings()
 

@@ -39,7 +39,7 @@ def main():
     parser.add_argument("--alpaca-secret", type=str, default=None, help="Alpaca Secret Key")
     args = parser.parse_args()
 
-    print("🚀 Starting OpenQuant Robot (CLI Mode)")
+    print("Starting OpenQuant Robot (CLI Mode)")
     print(f"   Interval: {args.interval}m")
     print(f"   Top N:    {args.top_n}")
     print(f"   MT5:      {'Enabled' if args.mt5 else 'Disabled'}")
@@ -49,7 +49,7 @@ def main():
     
     # Launch Dashboard
     if not args.no_dashboard:
-        print("📊 Launching Dashboard...")
+        print("Launching Dashboard...")
         global DASHBOARD_PROCESS
         
         # Log file for dashboard
@@ -61,7 +61,7 @@ def main():
             DASHBOARD_PROCESS = subprocess.Popen(cmd, cwd=project_root, stdout=log_file, stderr=log_file)
             print(f"   Dashboard process started (PID: {DASHBOARD_PROCESS.pid})")
             print(f"   Logs: {project_root / 'dashboard.log'}")
-            print(f"   👉 Access Dashboard at: http://localhost:8501")
+            print(f"   Access Dashboard at: http://localhost:8501")
             
         except Exception as e:
             print(f"   Failed to launch dashboard: {e}")
@@ -86,7 +86,7 @@ def main():
             err = SCHEDULER.error_message
             
             # Clear line and print status
-            sys.stdout.write(f"\r[Status] {status} " + (f"| ⚠️ {err}" if err else ""))
+            sys.stdout.write(f"\r[Status] {status} " + (f"| WARNING: {err}" if err else ""))
             sys.stdout.flush()
             
             time.sleep(1)

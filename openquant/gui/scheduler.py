@@ -94,8 +94,8 @@ class RobotScheduler:
                         LOGGER.info("Performing Intra-Cycle Regime Check...")
                         new_trend = self._check_global_trend()
                         if new_trend != current_trend and current_trend != "neutral":
-                            LOGGER.warning(f"⚠️ REGIME FLIP DETECTED: {current_trend} -> {new_trend}")
-                            self.status_message = f"⚠️ REGIME FLIP: {new_trend.upper()}"
+                            LOGGER.warning(f"REGIME FLIP DETECTED: {current_trend} -> {new_trend}")
+                            self.status_message = f"REGIME FLIP: {new_trend.upper()}"
                             # Optional: Trigger emergency re-evaluation here
                         last_regime_check = datetime.now()
                     
@@ -108,7 +108,7 @@ class RobotScheduler:
     def _run_cycle(self):
         """Execute one full robot cycle: Research -> Allocation -> Execution."""
         LOGGER.info("Auto-Pilot: Starting Cycle")
-        
+
         # Lazy imports to avoid circular deps
         from openquant.research.universe_runner import run_universe
         from openquant.paper.io import load_state, save_state
@@ -116,35 +116,57 @@ class RobotScheduler:
         from openquant.storage.portfolio_db import connect as _pdb_connect, record_rebalance, OrderFill
         from openquant.paper.mt5_bridge import apply_allocation_to_mt5
         from openquant.risk.portfolio_guard import GUARD
+        from openquant.risk.circuit_breaker import CIRCUIT_BREAKER
+        from openquant.risk.kill_switch import KILL_SWITCH
+        from openquant.risk.market_hours import MarketHours, MarketType
         from pathlib import Path
         import json
         import ccxt
-        
+
         cfg = self.run_config
-        
-        # 0. Risk Check (Pre-Flight)
-        # We need current equity to check risk. Load from state or DB.
+
+        # 0a. Kill Switch Check (Highest Priority)
+        if KILL_SWITCH.is_active():
+            LOGGER.error("KILL SWITCH ACTIVE - Trading halted")
+            self.status_message = "KILL SWITCH ACTIVE"
+            self.error_message = "Remove data/STOP file to resume"
+            return
+
+        # 0b. Circuit Breaker Check
+        if CIRCUIT_BREAKER.is_tripped():
+            status = CIRCUIT_BREAKER.get_status()
+            LOGGER.error(f"CIRCUIT BREAKER TRIPPED - Trading halted: {status}")
+            self.status_message = "CIRCUIT BREAKER TRIPPED"
+            self.error_message = str(status)
+            return
+
+        # 0c. Market Hours Check
+        market_type = MarketType.CRYPTO  # Default to crypto (24/7)
+        if cfg.get("use_mt5"):
+            market_type = MarketType.FOREX
+        elif cfg.get("use_alpaca"):
+            market_type = MarketType.US_STOCKS
+
+        market_hours = MarketHours(market_type)
+        if not market_hours.is_open():
+            next_open = market_hours.next_open()
+            LOGGER.info(f"Market closed. Next open: {next_open}")
+            self.status_message = f"Market closed. Opens: {next_open.strftime('%Y-%m-%d %H:%M EST')}"
+            return
+
+        # 0d. Risk Check (Pre-Flight)
         state_path = Path("data")/"paper_state.json"
         try:
             state = load_state(state_path)
-            # We need to estimate positions value. Since we don't have prices yet, 
-            # we might use the last known value or just cash if it's the first run.
-            # Better approach: The PortfolioGuard needs an equity value.
-            # Let's assume 0 positions value if we can't get it, or load from a separate tracking file.
-            # For now, let's use cash as a conservative estimate if we can't price positions.
-            current_equity = state.cash 
-            # If we have holdings, we should try to value them, but we haven't fetched prices yet.
-            # This is a chicken-and-egg problem. 
-            # Solution: Skip pre-flight check if we can't value, or use the post-exec check which has prices.
-            # Or, just use cash + 0 and accept it might be lower than real equity.
-            
+            current_equity = state.cash
+
             is_safe, reason = GUARD.on_cycle_start(current_equity)
             if not is_safe:
                 LOGGER.error(f"RISK STOP: {reason}")
                 self.stop()
                 self.status_message = f"RISK STOP: {reason}"
                 self.error_message = reason
-                
+
                 # Emergency Close
                 if cfg.get("use_mt5"):
                     try:
@@ -220,16 +242,19 @@ class RobotScheduler:
         # Build snapshot
         prices = {}
         # Initialize MT5 if needed for pricing
-        mt5 = None
+        # Initialize MT5 if needed for pricing
+        mt5_broker = None
         if cfg.get("use_mt5"):
             try:
-                import MetaTrader5 as _mt5
-                mt5 = _mt5
+                from openquant.broker.mt5_broker import MT5Broker
+                # Initialize broker (reads creds from env if not in config)
                 creds = cfg.get("mt5_creds", {})
-                if not mt5.initialize(path=creds.get("path")):
-                     LOGGER.warning(f"MT5 init failed: {mt5.last_error()}")
-                elif creds.get("login"):
-                     mt5.login(int(creds["login"]), password=creds.get("password"), server=creds.get("server"))
+                mt5_broker = MT5Broker(
+                    login=(int(creds["login"]) if creds.get("login") else None),
+                    password=creds.get("password"),
+                    server=creds.get("server"),
+                    terminal_path=creds.get("path")
+                )
             except Exception as e:
                 LOGGER.warning(f"MT5 init exception: {e}")
 
@@ -242,9 +267,12 @@ class RobotScheduler:
             if not sym: continue
             
             px = 0.0
-            if ex == "mt5" and mt5:
+            px = 0.0
+            if ex == "mt5" and mt5_broker:
                 try:
-                    tick = mt5.symbol_info_tick(sym)
+                    # Use broker's internal MT5 reference or add a get_price method
+                    # For now, access .mt5 directly as we know it exists on the broker
+                    tick = mt5_broker.mt5.symbol_info_tick(sym)
                     px = float(getattr(tick, "last", 0.0) or getattr(tick, "bid", 0.0) or getattr(tick, "ask", 0.0) or 0.0)
                 except Exception:
                     px = 0.0
@@ -331,22 +359,90 @@ class RobotScheduler:
                         LOGGER.warning(f"Emergency Close: Liquidated {n} positions.")
                     except Exception as e:
                         LOGGER.error(f"Emergency Close Failed: {e}")
+
+            # 3.6 Update Circuit Breaker with current equity
+            CIRCUIT_BREAKER.update(current_equity=new_equity)
+            if CIRCUIT_BREAKER.is_tripped():
+                LOGGER.error("CIRCUIT BREAKER TRIPPED after execution")
+                self.stop()
+                self.status_message = "CIRCUIT BREAKER TRIPPED"
+                self.error_message = str(CIRCUIT_BREAKER.get_status())
+                return
+
         except Exception as e:
             LOGGER.error(f"Failed to update risk state: {e}")
 
         # 4. MT5 Execution (if enabled)
         # 4. MT5 Execution (if enabled)
-        if cfg.get("use_mt5"):
+        # 4. MT5 Execution (if enabled)
+        if cfg.get("use_mt5") and mt5_broker:
             LOGGER.info("Auto-Pilot: Syncing with MT5...")
-            creds = cfg.get("mt5_creds", {})
             try:
-                apply_allocation_to_mt5(
-                    alloc, 
-                    terminal_path=creds.get("path"),
-                    login=(int(creds["login"]) if creds.get("login") else None),
-                    password=creds.get("password"),
-                    server=creds.get("server")
-                )
+                # Reuse the broker instance we created for pricing
+                broker = mt5_broker
+                
+                # 1. Get current positions
+                current_pos = broker.get_positions()
+                
+                # 2. Calculate Target positions
+                equity = broker.get_equity()
+                
+                target_weights = {}
+                for item in alloc:
+                    sym = item.get("symbol")
+                    w = float(item.get("weight", 0.0))
+                    target_weights[sym] = target_weights.get(sym, 0.0) + w
+                
+                # 3. Generate Orders
+                for sym, target_weight in target_weights.items():
+                    # Map symbol to MT5 format if needed (e.g. BTC/USDT -> BTCUSD)
+                    # The broker.place_order handles mapping, but we need price for delta calc.
+                    # We can use the broker's internal mapping helper or just rely on the snapshot price 
+                    # if the key matches.
+                    
+                    # Find price in snapshot
+                    price = 0.0
+                    for k, p in snap.prices.items():
+                        if k[1] == sym:
+                            price = p
+                            break
+                    
+                    if price <= 0:
+                        LOGGER.warning(f"MT5: No price for {sym}, skipping.")
+                        continue
+                        
+                    # MT5Broker returns positions with mapped symbols (e.g. BTCUSD)
+                    # We need to match 'sym' (e.g. BTC/USDT) to that.
+                    # Let's try to map 'sym' to what MT5 would return.
+                    from openquant.paper import mt5_bridge
+                    mt5_sym = mt5_bridge.map_symbol(sym)
+                    
+                    current_qty = float(current_pos.get(mt5_sym, 0.0))
+                    current_val = current_qty * price
+                    target_val = equity * target_weight
+                    
+                    delta_val = target_val - current_val
+                    
+                    # Threshold ($10)
+                    if abs(delta_val) < 10.0:
+                        continue
+                        
+                    delta_qty = delta_val / price
+                    side = "buy" if delta_qty > 0 else "sell"
+                    qty_abs = abs(delta_qty)
+                    
+                    LOGGER.info(f"MT5 Order: {side.upper()} {qty_abs:.4f} {sym} (Delta: ${delta_val:.2f})")
+                    
+                    try:
+                        broker.place_order(
+                            symbol=sym, # Broker handles mapping
+                            quantity=qty_abs,
+                            side=side,
+                            order_type="market"
+                        )
+                    except Exception as oe:
+                        LOGGER.error(f"MT5 Order Failed {sym}: {oe}")
+                        
             except Exception as e:
                 LOGGER.error(f"MT5 Sync Failed: {e}")
 

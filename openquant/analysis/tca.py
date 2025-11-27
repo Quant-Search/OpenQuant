@@ -64,13 +64,13 @@ class TCAMonitor:
                 # Let's stick to simple price diff relative to side.
                 # Buy: (Fill - Arrival) / Arrival
                 # Sell: (Arrival - Fill) / Arrival
-                
+
                 row = con.execute("SELECT side, arrival_price FROM orders WHERE order_id = ?", (order_id,)).fetchone()
-                if not row:
-                    LOGGER.warning(f"TCA: Order {order_id} not found for update.")
+                if row is None or len(row) < 2:
+                    LOGGER.warning(f"TCA: Order {order_id} not found for update. Row: {row}")
                     return
 
-                side, arrival = row
+                side, arrival = row[0], row[1]
                 if arrival and arrival > 0:
                     if side.lower() == "buy":
                         slippage_bps = ((fill_price - arrival) / arrival) * 10000

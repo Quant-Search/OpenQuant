@@ -314,8 +314,9 @@ def upsert_results(rows: List[Dict[str, Any]], db_path: str | Path = "data/resul
             """,
             prepared,
         )
-        # We don't need to refresh view if we use raw queries in readers
-        # _refresh_best_view(con) 
+        # Refresh the best_configs view after inserting new data
+        # This allows querying via "SELECT * FROM best_configs"
+        _refresh_best_view(con)
     finally:
         con.close()
     return db_path

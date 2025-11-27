@@ -1,5 +1,19 @@
 # OpenQuant Roadmap
 
+## Design Philosophy
+**Pure Quantitative Trading**: This robot is based exclusively on mathematical models, statistics, and probability theory.
+- NO retail/technical analysis indicators (SMA, EMA, RSI, MACD, Bollinger, etc.)
+- Focus on: Kalman filtering, cointegration, GARCH, Hurst exponent, stat-arb, market microstructure
+- All strategies must have mathematical/statistical foundation
+
+## Current Status (2025-11-27)
+- **99 tests passing**, 2 skipped (AppImage on Windows)
+- Retail indicator code removed (ta_features.py, pandas_ta wrapper)
+- All 7 previously failing tests fixed
+- Risk management enhanced: Kill switch, circuit breakers, per-asset limits
+- Audit trail database for regulatory compliance
+- Periodic retrain scheduler for automated WFO
+
 ## Phase 1 — Core Engine (Completed)
 - [x] Data loaders: yfinance (equities), ccxt (crypto), MT5 (forex/cfd)
 - [x] Backtesting: vectorized, fees/slippage, position sizing
@@ -31,7 +45,11 @@
 - [x] Consider adding a trading schedule/time window
 - [x] Add email/notification alerts for significant events (WhatsApp via Webhook)
 - [x] Implement proper logging of all actions
-- [ ] Add a kill switch for emergency stops
+- [x] Add a kill switch for emergency stops (integrated into all execution paths)
+- [x] Circuit breakers (daily loss, drawdown, volatility limits)
+- [x] Per-asset risk limits (max notional, max % portfolio, max positions)
+- [x] Audit trail database (DuckDB persistence of all trading decisions)
+- [x] Periodic retrain scheduler (automated WFO retraining)
 
 ## Phase 2 — Advanced Strategies (Completed)
 - [x] Quantitative Core:

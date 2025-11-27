@@ -4,6 +4,8 @@ Alpaca Broker Implementation.
 import os
 from typing import Dict, List, Any, Optional
 from openquant.broker.abstract import Broker
+from openquant.risk.kill_switch import KILL_SWITCH
+from openquant.risk.circuit_breaker import CIRCUIT_BREAKER
 
 try:
     from alpaca.trading.client import TradingClient
@@ -49,22 +51,34 @@ class AlpacaBroker(Broker):
             pos_dict[p.symbol] = float(p.qty)
         return pos_dict
 
-    def place_order(self, 
-                   symbol: str, 
-                   quantity: float, 
-                   side: str, 
-                   order_type: str = "market", 
+    def place_order(self,
+                   symbol: str,
+                   quantity: float,
+                   side: str,
+                   order_type: str = "market",
                    limit_price: Optional[float] = None) -> Dict[str, Any]:
-        
+        """Place an order on Alpaca.
+
+        SAFETY: Checks kill switch and circuit breaker before executing.
+        If either is active, raises RuntimeError.
+        """
+        # KILL SWITCH CHECK - Critical safety mechanism
+        if KILL_SWITCH.is_active():
+            raise RuntimeError("KILL SWITCH ACTIVE - Trading halted. Remove data/STOP file to resume.")
+
+        # CIRCUIT BREAKER CHECK - Automatic risk-based halt
+        if CIRCUIT_BREAKER.is_tripped():
+            raise RuntimeError("CIRCUIT BREAKER TRIPPED - Trading halted. Check risk thresholds.")
+
         alpaca_side = OrderSide.BUY if side.lower() == "buy" else OrderSide.SELL
-        
+
         # Capture arrival price (snapshot) for TCA
         arrival_price = 0.0
         try:
             # Try to get a quick quote if possible, or use last trade
             # For now, we assume 0.0 if we can't get it easily without data API
             # In a real system, we'd pass the decision price from the strategy
-            pass 
+            pass
         except Exception:
             pass
 

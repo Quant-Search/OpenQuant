@@ -83,12 +83,28 @@ def mock_db():
     return con
 
 def test_view_dashboard(mock_db):
+    """Test dashboard view renders without errors.
+
+    We patch plotly.express to avoid narwhals/duckdb compatibility issues
+    that occur when plotly tries to validate mock DataFrame data.
+    """
     print("\nTesting Research Dashboard View...")
-    view_dashboard(mock_db)
+
+    # Patch plotly.express to avoid narwhals/duckdb type checking issues
+    # The real plotly code has compatibility issues with mock DataFrames
+    with patch("openquant.gui.dashboard.px") as mock_px:
+        # Setup mock figure that plotly_chart can accept
+        mock_fig = MagicMock()
+        mock_px.histogram.return_value = mock_fig
+        mock_px.scatter.return_value = mock_fig
+        mock_px.line.return_value = mock_fig
+
+        view_dashboard(mock_db)
+
     # Verify critical calls
     assert st_mock.dataframe.called
     assert st_mock.plotly_chart.called
-    print("✅ Research Dashboard Rendered")
+    print("Dashboard rendered successfully")
 
 def test_view_robot_control():
     print("\nTesting Robot Control View...")
@@ -126,18 +142,51 @@ def test_view_settings():
     print("✅ Settings Rendered")
 
 def test_view_charting(mock_db):
+    """Test charting view renders chart when Load button is clicked.
+
+    We need to:
+    1. Mock ccxt exchange to return fake OHLCV data
+    2. Set button to return True (simulating click)
+    3. Mock create_interactive_chart to avoid plotly issues
+
+    Note: ccxt is imported inside the function, so we patch the builtins import.
+    """
     print("\nTesting Charting View...")
-    with patch("ccxt.binance") as mock_exch:
-        mock_exch.return_value.fetch_ohlcv.return_value = [
-            [1600000000000, 100, 105, 95, 102, 1000] for _ in range(100)
-        ]
-        
-        # Trigger load button
-        st_mock.button.return_value = True
-        view_charting(mock_db)
-        
-        assert st_mock.plotly_chart.called
-        print("✅ Charting Rendered")
+
+    # Mock OHLCV data that ccxt would return
+    fake_ohlcv = [[1600000000000 + i*3600000, 100, 105, 95, 102, 1000] for i in range(100)]
+
+    # Create mock ccxt module
+    mock_ccxt = MagicMock()
+    mock_exchange = MagicMock()
+    mock_exchange.fetch_ohlcv.return_value = fake_ohlcv
+    mock_ccxt.binance.return_value = mock_exchange
+
+    # Create mock chart function
+    mock_chart_func = MagicMock(return_value=MagicMock())
+
+    # Patch the import mechanism to return our mocks
+    import sys
+    original_modules = sys.modules.copy()
+    sys.modules['ccxt'] = mock_ccxt
+
+    try:
+        with patch("openquant.utils.plotting.create_interactive_chart", mock_chart_func):
+            # Make button return True to trigger chart loading
+            st_mock.button.return_value = True
+
+            view_charting(mock_db)
+
+            # Verify chart was created and displayed
+            assert mock_chart_func.called, "create_interactive_chart should be called"
+            assert st_mock.plotly_chart.called, "plotly_chart should be called"
+            print("Charting view rendered successfully")
+    finally:
+        # Restore original modules
+        if 'ccxt' in sys.modules and sys.modules['ccxt'] is mock_ccxt:
+            del sys.modules['ccxt']
+        # Reset button for other tests
+        st_mock.button.return_value = False
 
 def test_tca_integration_in_dashboard():
     print("\nTesting TCA Section in Dashboard...")

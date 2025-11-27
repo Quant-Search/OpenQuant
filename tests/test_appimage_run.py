@@ -1,16 +1,33 @@
+"""Test AppImage execution (Linux only).
+
+This test verifies that the packaged AppImage can start correctly.
+It is skipped on non-Linux platforms or when AppImage is not built.
+"""
 import os
 import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
+
 def test_appimage_execution():
-    """Verify that the AppImage starts and returns a valid exit code."""
+    """Verify that the AppImage starts and returns a valid exit code.
+
+    This test is skipped when:
+    - Running on Windows (AppImage is Linux-only format)
+    - AppImage file does not exist (not built yet)
+    """
+    # Skip on non-Linux platforms (AppImage is Linux-only)
+    if sys.platform != "linux":
+        pytest.skip("AppImage is Linux-only; skipping on non-Linux platform")
+
     project_root = Path(__file__).parent.parent
     appimage_path = project_root / "OpenQuantRobot-x86_64.AppImage"
-    
+
+    # Skip if AppImage not built
     if not appimage_path.exists():
-        print(f"❌ AppImage not found at: {appimage_path}")
-        sys.exit(1)
+        pytest.skip(f"AppImage not found at: {appimage_path}")
         
     print(f"🚀 Testing AppImage: {appimage_path}")
     
@@ -51,8 +68,14 @@ def test_appimage_execution():
         # We can consider this a partial success for a GUI app if we can't control it via CLI.
         
     except Exception as e:
-        print(f"❌ Failed to run AppImage: {e}")
-        sys.exit(1)
+        # Use pytest.fail instead of sys.exit for proper test failure
+        pytest.fail(f"Failed to run AppImage: {e}")
+
 
 if __name__ == "__main__":
-    test_appimage_execution()
+    # When run directly, use sys.exit for CLI compatibility
+    try:
+        test_appimage_execution()
+    except Exception as e:
+        print(f"Error: {e}")
+        sys.exit(1)

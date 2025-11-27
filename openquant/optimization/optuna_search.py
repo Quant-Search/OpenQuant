@@ -45,20 +45,27 @@ def optuna_best_params(
         params = {}
         for k, v_list in zip(keys, vals):
             # Dynamic type detection for search space
+            # For small grids (<=5 values), always use categorical to ensure
+            # returned values are exactly from the grid
             if not v_list:
                 continue
-            
+
+            # Small grids: use categorical to guarantee exact grid values
+            if len(v_list) <= 5:
+                params[k] = trial.suggest_categorical(k, v_list)
+                continue
+
             first_val = v_list[0]
             if isinstance(first_val, bool):
                 params[k] = trial.suggest_categorical(k, v_list)
             elif isinstance(first_val, int):
-                # Use int range if list looks like a range
-                if len(v_list) > 1 and all(isinstance(x, int) for x in v_list):
+                # Use int range if list looks like a range (>5 values)
+                if all(isinstance(x, int) for x in v_list):
                     min_v, max_v = min(v_list), max(v_list)
                     # Step detection (heuristic)
                     step = 1
-                    if len(v_list) > 2:
-                        sorted_v = sorted(list(set(v_list)))
+                    sorted_v = sorted(list(set(v_list)))
+                    if len(sorted_v) > 2:
                         diffs = [sorted_v[i+1] - sorted_v[i] for i in range(len(sorted_v)-1)]
                         if len(set(diffs)) == 1:
                             step = diffs[0]
@@ -66,8 +73,8 @@ def optuna_best_params(
                 else:
                     params[k] = trial.suggest_categorical(k, v_list)
             elif isinstance(first_val, float):
-                # Use float range
-                if len(v_list) > 1 and all(isinstance(x, (int, float)) for x in v_list):
+                # Use float range for large grids
+                if all(isinstance(x, (int, float)) for x in v_list):
                     min_v, max_v = min(v_list), max(v_list)
                     params[k] = trial.suggest_float(k, min_v, max_v)
                 else:
