@@ -84,8 +84,12 @@
 - [x] Add daily loss limits <!-- id: 5 -->
 - [x] Consider adding a trading schedule/time window <!-- id: 6 -->
 - [x] Add email/notification alerts for significant events (WhatsApp via Webhook)
-- [ ] Implement proper logging of all actions
-- [ ] Add a kill switch for emergency stops
+- [x] Implement proper logging of all actions <!-- id: 7 -->
+- [x] Add a kill switch for emergency stops (integrated into all execution paths) <!-- id: 8 -->
+- [x] Circuit breakers (daily loss, drawdown, volatility limits) <!-- id: 9 -->
+- [x] Per-asset risk limits (max notional, max % portfolio, max positions) <!-- id: 10 -->
+- [x] Audit trail database (DuckDB persistence of all trading decisions) <!-- id: 11 -->
+- [x] Periodic retrain scheduler (automated WFO retraining) <!-- id: 12 -->
 
 ## Phase 4 — Live Execution (Guarded)
 - [ ] Kill switches, circuit breakers, per-asset risk limits
