@@ -9,7 +9,7 @@ OpenQuant is an open-source quantitative trading laboratory designed for rigorou
 *   **Multi-Broker Support**:
     *   **Paper Trading**: Robust simulation with order management, slippage/fee modeling, and portfolio tracking.
     *   **Alpaca**: Native integration for Linux/Cloud environments (Live & Paper).
-    *   **MetaTrader 5**: Bridge for Forex/CFD trading (Windows/Wine required).
+    *   **MetaTrader 5**: Full broker integration for Forex/CFD trading on Windows via `MT5Broker` class.
 *   **Quantitative Core**:
     *   **Stationarity**: ADF, KPSS tests.
     *   **Regime Classification**: Hurst Exponent, Trend/Mean-Reversion scoring.

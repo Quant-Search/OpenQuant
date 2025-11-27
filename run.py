@@ -12,7 +12,7 @@ def main():
     project_root = Path(__file__).parent
     script_path = project_root / "scripts" / "run_robot_cli.py"
     
-    print("🚀 Initializing OpenQuant...")
+    print("Initializing OpenQuant...")
     
     # Forward arguments to the CLI script
     args = [sys.executable, str(script_path)] + sys.argv[1:]
