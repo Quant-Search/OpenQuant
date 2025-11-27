@@ -130,7 +130,12 @@ def backtest_signals(
     swap_cost = pd.Series(0.0, index=px.index)
     if swap_long != 0.0 or swap_short != 0.0:
         # Detect day change
-        day_change = px.index.day != pd.Series(px.index).shift(1).fillna(px.index.day).values
+        # Create a series of day values, shift it, and compare
+        day_series = pd.Series(px.index.day, index=px.index)
+        day_shifted = day_series.shift(1)
+        # Fill NaN with same day (first row won't trigger day change)
+        day_shifted = day_shifted.fillna(day_series.iloc[0])
+        day_change = day_series != day_shifted
         # If position held during day change, apply swap
         # Swap is in pips per day. 
         # Cost = (Swap Pips * Pip Value) / Price * Position Size * Leverage

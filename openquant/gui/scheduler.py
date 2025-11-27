@@ -23,13 +23,23 @@ class RobotScheduler:
         self.status_message = "Stopped"
         self.error_message: Optional[str] = None
         
+        # Position monitor for continuous trade surveillance
+        self._position_monitor = None
+        self._mt5_broker_instance = None
+        
         # Configuration for the run
         self.run_config: Dict[str, Any] = {
             "top_n": 10,
             "fee_bps": 2.0,
             "slippage_bps": 5.0,
             "use_mt5": False,
-            "mt5_creds": {}
+            "mt5_creds": {},
+            "position_monitoring": {
+                "enabled": True,
+                "check_interval_seconds": 60,
+                "trailing_activation_bps": 50,
+                "trailing_distance_bps": 30
+            }
         }
 
     def start(self, interval_minutes: int = 60, config: Dict[str, Any] = None):
@@ -58,6 +68,14 @@ class RobotScheduler:
             
         self.status_message = "Stopping..."
         self._stop_event.set()
+        
+        # Stop position monitor if running
+        if self._position_monitor:
+            try:
+                self._position_monitor.stop()
+            except Exception as e:
+                LOGGER.error(f"Error stopping position monitor: {e}")
+        
         # Don't join here to avoid blocking GUI if loop is sleeping long
         # The loop will exit on its own
         self.is_running = False
@@ -445,6 +463,39 @@ class RobotScheduler:
                         
             except Exception as e:
                 LOGGER.error(f"MT5 Sync Failed: {e}")
+                
+            # Store broker instance for position monitoring
+            if mt5_broker:
+                self._mt5_broker_instance = mt5_broker
+                
+                # Start position monitor if enabled
+                if cfg.get("position_monitoring", {}).get("enabled", True):
+                    try:
+                        from openquant.trading.position_monitor import PositionMonitor
+                        from openquant.risk.trailing_stop import TrailingStopManager
+                        
+                        # Stop existing monitor if running
+                        if self._position_monitor:
+                            self._position_monitor.stop()
+                            
+                        # Create new monitor with config
+                        pm_cfg = cfg.get("position_monitoring", {})
+                        trailing_mgr = TrailingStopManager(
+                            trailing_bps=pm_cfg.get("trailing_distance_bps", 30),
+                            activation_bps=pm_cfg.get("trailing_activation_bps", 50)
+                        )
+                        
+                        self._position_monitor = PositionMonitor(
+                            check_interval_seconds=pm_cfg.get("check_interval_seconds", 60),
+                            trailing_stop_manager=trailing_mgr
+                        )
+                        
+                        # Start monitoring
+                        self._position_monitor.start(mt5_broker)
+                        LOGGER.info("Position monitor started")
+                        
+                    except Exception as e:
+                        LOGGER.error(f"Failed to start position monitor: {e}")
 
         # 5. Alpaca Execution (if enabled)
         if cfg.get("use_alpaca"):
