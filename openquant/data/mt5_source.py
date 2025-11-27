@@ -63,9 +63,16 @@ def _ensure_init() -> object:
         raise RuntimeError("MetaTrader5 module not available") from e
     ok = False
     last_err = None
+    
+    # Prepare kwargs
+    kwargs = {}
+    if _CFG.get("login"): kwargs["login"] = int(_CFG["login"])
+    if _CFG.get("password"): kwargs["password"] = str(_CFG["password"])
+    if _CFG.get("server"): kwargs["server"] = str(_CFG["server"])
+
     try:
         if _CFG.get("terminal_path"):
-            ok = mt5.initialize(path=str(_CFG["terminal_path"]))
+            ok = mt5.initialize(path=str(_CFG["terminal_path"]), **kwargs)
             if not ok and hasattr(mt5, "last_error"):
                 try:
                     last_err = mt5.last_error()
@@ -73,7 +80,7 @@ def _ensure_init() -> object:
                     last_err = None
         if not ok:
             # Fallback: try attaching to any already running terminal
-            ok = mt5.initialize()
+            ok = mt5.initialize(**kwargs)
             if not ok and last_err is None and hasattr(mt5, "last_error"):
                 try:
                     last_err = mt5.last_error()
