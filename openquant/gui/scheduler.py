@@ -461,15 +461,59 @@ class RobotScheduler:
                     side = "buy" if delta_lots > 0 else "sell"
                     lots_abs = abs(delta_lots)
                     
-                    LOGGER.info(f"MT5 Order: {side.upper()} {lots_abs:.4f} lots {mt5_sym} (Delta: ${delta_val:.2f})")
+                    # Calculate TP/SL using dynamic exits (ATR-based)
+                    tp_price = None
+                    sl_price = None
                     
                     try:
-                        broker.place_order(
+                        from openquant.trading.dynamic_exits import DynamicExitCalculator
+                        from openquant.data import mt5_source
+                        
+                        # Fetch recent price data for ATR calculation
+                        df = mt5_source.fetch_ohlcv(mt5_sym, timeframe="1h", limit=100)
+                        
+                        if not df.empty and len(df) >= 20:
+                            # Calculate TP/SL
+                            exit_calc = DynamicExitCalculator(
+                                method="atr",
+                                tp_atr_multiplier=3.0,
+                                sl_atr_multiplier=1.5,
+                                atr_period=14
+                            )
+                            
+                            tp_price, sl_price = exit_calc.calculate_exits(
+                                df=df,
+                                entry_price=price,
+                                side="LONG" if side == "buy" else "SHORT"
+                            )
+                            
+                            LOGGER.info(f"MT5 Order: {side.upper()} {lots_abs:.4f} lots {mt5_sym} (Delta: ${delta_val:.2f}) | TP: {tp_price:.5f}, SL: {sl_price:.5f}")
+                        else:
+                            LOGGER.warning(f"Insufficient data for TP/SL calculation on {mt5_sym}, using order without TP/SL")
+                            LOGGER.info(f"MT5 Order: {side.upper()} {lots_abs:.4f} lots {mt5_sym} (Delta: ${delta_val:.2f})")
+                            
+                    except Exception as e:
+                        LOGGER.warning(f"Failed to calculate TP/SL for {mt5_sym}: {e}, proceeding without TP/SL")
+                        LOGGER.info(f"MT5 Order: {side.upper()} {lots_abs:.4f} lots {mt5_sym} (Delta: ${delta_val:.2f})")
+                    
+                    try:
+                        # Place order with TP/SL
+                        result = broker.place_order(
                             symbol=sym, # Broker handles mapping
                             quantity=lots_abs,
                             side=side,
                             order_type="market"
                         )
+                        
+                        # Set TP/SL on the position if calculated
+                        if tp_price is not None and sl_price is not None:
+                            try:
+                                from openquant.paper.mt5_bridge import modify_position
+                                modify_position(mt5_sym, sl=sl_price, tp=tp_price)
+                                LOGGER.info(f"Set TP/SL for {mt5_sym}: TP={tp_price:.5f}, SL={sl_price:.5f}")
+                            except Exception as e:
+                                LOGGER.error(f"Failed to set TP/SL for {mt5_sym}: {e}")
+                                
                     except Exception as oe:
                         LOGGER.error(f"MT5 Order Failed {sym}: {oe}")
                         
@@ -505,6 +549,19 @@ class RobotScheduler:
                         # Start monitoring
                         self._position_monitor.start(mt5_broker)
                         LOGGER.info("Position monitor started")
+                        
+                        # Immediately check positions (don't wait 60 seconds)
+                        try:
+                            metrics = self._position_monitor.get_all_metrics()
+                            if metrics:
+                                LOGGER.info(f"Currently monitoring {len(metrics)} position(s):")
+                                for m in metrics:
+                                    LOGGER.info(f"  {m.symbol} ({m.side}): P&L {m.unrealized_pnl_pct:+.2f}% (${m.unrealized_pnl_usd:+.2f}) | "
+                                              f"SL: {m.current_sl:.5f}, TP: {m.current_tp:.5f}")
+                            else:
+                                LOGGER.info("No open positions to monitor")
+                        except Exception as e:
+                            LOGGER.debug(f"Could not get immediate position metrics: {e}")
                         
                     except Exception as e:
                         LOGGER.error(f"Failed to start position monitor: {e}")
