@@ -81,21 +81,29 @@ def init(login: Optional[int] = None, server: Optional[str] = None, password: Op
             pass
 
         # Not connected: Try initialize (optionally pass path for portable installs)
+        # Not connected: Try initialize (optionally pass path for portable installs)
         ok = False
         last_err = None
+        
+        # Prepare kwargs
+        kwargs = {}
+        if login: kwargs["login"] = int(login)
+        if password: kwargs["password"] = password
+        if server: kwargs["server"] = server
+
         if terminal_path:
             try:
                 Path(terminal_path).parent.mkdir(parents=True, exist_ok=True)
             except Exception:
                 pass
-            ok = mt5.initialize(path=terminal_path)  # type: ignore[arg-type]
+            ok = mt5.initialize(path=terminal_path, **kwargs)  # type: ignore[arg-type]
             if not ok and hasattr(mt5, "last_error"):
                 try:
                     last_err = mt5.last_error()
                 except Exception:
                     last_err = None
         if not ok:
-            ok = mt5.initialize()  # type: ignore[arg-type]
+            ok = mt5.initialize(**kwargs)  # type: ignore[arg-type]
             if not ok and hasattr(mt5, "last_error") and last_err is None:
                 try:
                     last_err = mt5.last_error()
