@@ -16,6 +16,19 @@
   - `scripts/execution_quality_integration_example.py` - Integration examples
 - **Documentation**: See `EXECUTION_QUALITY.md` for detailed usage guide
 
+### Strategy Comparison Report (NEW)
+- **Comprehensive Backtesting Comparison**: New `openquant/reporting/strategy_comparison.py` module
+  - Side-by-side metrics tables (Sharpe, Sortino, Max DD, Win Rate, Profit Factor, CVaR, Calmar, etc.)
+  - Equity curve overlays for visual performance comparison
+  - Drawdown curve overlays to analyze risk patterns
+  - Statistical tests: Paired t-test and Diebold-Mariano test for strategy selection
+  - Return correlation matrix for diversification analysis
+  - Automated strategy ranking with composite scoring (customizable weights)
+  - Export capabilities: CSV files, text reports, matplotlib/seaborn visualizations
+- **Example Script**: `scripts/strategy_comparison_example.py` demonstrates full workflow
+- **Comprehensive Tests**: `tests/test_strategy_comparison.py` with 20+ test cases
+- **Documentation**: `openquant/reporting/README_STRATEGY_COMPARISON.md` with usage guide
+
 ### Single GUI Dashboard (NEW)
 - **Consolidated Control Center**: All robot controls in one Streamlit dashboard
 - **Risk Monitor Page**: Real-time view of kill switch, circuit breaker, market hours status
