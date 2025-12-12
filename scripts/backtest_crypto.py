@@ -11,6 +11,10 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 import json
+import logging
+
+logging.basicConfig(level=logging.WARNING, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 # Crypto often respects momentum better than forex
 class CryptoStrategy:
@@ -69,18 +73,22 @@ def download_crypto():
     data = {}
     try:
         import yfinance as yf
-        print("📥 Downloading Crypto Data...")
-        pairs = ["BTC-USD", "ETH-USD"]
-        for sym in pairs:
-            try:
-                # Crypto constraints are looser on yfinance usually
-                df = yf.Ticker(sym).history(period="1y", interval="1h")
-                if not df.empty:
-                    data[sym] = df
-                    print(f"   ✅ {sym}: {len(df)} bars")
-            except Exception as e:
-                print(f"   ❌ {sym}: {e}")
-    except: pass
+    except ImportError as e:
+        logger.error(f"Failed to import yfinance: {e}")
+        return data
+    
+    print("📥 Downloading Crypto Data...")
+    pairs = ["BTC-USD", "ETH-USD"]
+    for sym in pairs:
+        try:
+            df = yf.Ticker(sym).history(period="1y", interval="1h")
+            if not df.empty:
+                data[sym] = df
+                print(f"   ✅ {sym}: {len(df)} bars")
+        except Exception as e:
+            logger.warning(f"Failed to download {sym}: {e}")
+            print(f"   ❌ {sym}: {e}")
+    
     return data
 
 def run_backtest():

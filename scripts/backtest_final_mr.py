@@ -13,6 +13,10 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 import json
+import logging
+
+logging.basicConfig(level=logging.WARNING, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 PAIRS = ["EURUSD=X", "GBPUSD=X", "JPY=X"]
 PAIR_NAMES = ["EURUSD", "GBPUSD", "USDJPY"]
@@ -21,18 +25,23 @@ def download_pairs(days: int = 365):
     data = {}
     try:
         import yfinance as yf
-        print("📥 Downloading...")
-        for yf_sym, name in zip(PAIRS, PAIR_NAMES):
-            try:
-                df = yf.Ticker(yf_sym).history(
-                    start=datetime.now() - timedelta(days=days),
-                    end=datetime.now(), interval="1h"
-                )
-                if not df.empty:
-                    data[name] = df[['Open', 'High', 'Low', 'Close', 'Volume']]
-                    print(f"   ✅ {name}: {len(df)} bars")
-            except: pass
-    except: pass
+    except ImportError as e:
+        logger.error(f"Failed to import yfinance: {e}")
+        return data
+    
+    print("📥 Downloading...")
+    for yf_sym, name in zip(PAIRS, PAIR_NAMES):
+        try:
+            df = yf.Ticker(yf_sym).history(
+                start=datetime.now() - timedelta(days=days),
+                end=datetime.now(), interval="1h"
+            )
+            if not df.empty:
+                data[name] = df[['Open', 'High', 'Low', 'Close', 'Volume']]
+                print(f"   ✅ {name}: {len(df)} bars")
+        except Exception as e:
+            logger.warning(f"Failed to download {name}: {e}")
+    
     return data
 
 class FinalMR:

@@ -12,7 +12,7 @@ optuna
 streamlit
 pyinstaller
 plotly
-pandas_ta
+pandas_ta  # Note: Not compatible with Python 3.14+ (requires numba which only supports Python <3.14)
 psutil
 statsmodels
 arch

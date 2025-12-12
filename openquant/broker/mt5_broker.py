@@ -2,8 +2,11 @@
 MetaTrader 5 Broker Implementation.
 """
 import os
+import logging
 from typing import Dict, List, Any, Optional
 from openquant.broker.abstract import Broker
+
+logger = logging.getLogger(__name__)
 
 try:
     from openquant.paper import mt5_bridge
@@ -24,17 +27,14 @@ class MT5Broker(Broker):
         if not MT5_AVAILABLE:
             raise ImportError("MetaTrader5 not available. Install it or run on Windows.")
             
-        # Get credentials from environment if not provided
         self.login = login or (int(os.getenv("MT5_LOGIN")) if os.getenv("MT5_LOGIN") else None)
         self.password = password or os.getenv("MT5_PASSWORD")
         self.server = server or os.getenv("MT5_SERVER")
         self.terminal_path = terminal_path or os.getenv("MT5_TERMINAL_PATH")
         
-        # Validate credentials
         if not self.login or not self.password or not self.server:
             raise ValueError("MT5 credentials missing. Set MT5_LOGIN, MT5_PASSWORD, MT5_SERVER in .env or pass as arguments.")
             
-        # Initialize MT5 connection
         if not mt5_bridge.init(
             login=self.login,
             password=self.password,
@@ -43,16 +43,18 @@ class MT5Broker(Broker):
         ):
             raise RuntimeError("Failed to initialize/login to MT5. Check credentials and ensure MT5 terminal is installed.")
         
-        # Get the MT5 module reference
         self.mt5 = mt5_bridge._lazy_import()
         if not self.mt5:
             raise RuntimeError("MT5 module not available after initialization")
             
-        # Initialize TCA
         try:
             from openquant.analysis.tca import TCAMonitor
             self.tca = TCAMonitor()
-        except ImportError:
+        except ImportError as e:
+            logger.info(f"TCA monitoring not available: {e}")
+            self.tca = None
+        except Exception as e:
+            logger.warning(f"Failed to initialize TCA monitor: {e}")
             self.tca = None
 
     def get_cash(self) -> float:
@@ -61,8 +63,13 @@ class MT5Broker(Broker):
             account = self.mt5.account_info()
             if account:
                 return float(account.balance)
+            logger.warning("MT5 account_info returned None")
             return 0.0
-        except Exception:
+        except (AttributeError, ValueError) as e:
+            logger.error(f"Error retrieving cash balance from MT5: {e}")
+            return 0.0
+        except Exception as e:
+            logger.error(f"Unexpected error getting cash balance: {e}")
             return 0.0
 
     def get_equity(self) -> float:
@@ -88,36 +95,29 @@ class MT5Broker(Broker):
         order_type: 'market', 'limit'
         quantity: volume in lots
         """
-        # Map symbol if needed (e.g., BTC/USDT -> BTCUSD)
         mt5_symbol = mt5_bridge.map_symbol(symbol)
         
-        # Ensure symbol is available
         if not mt5_bridge._ensure_symbol(self.mt5, mt5_symbol):
             raise ValueError(f"Symbol {mt5_symbol} not available in MT5")
         
-        # Get symbol info for validation
         info = self.mt5.symbol_info(mt5_symbol)
         if not info:
             raise ValueError(f"Cannot get symbol info for {mt5_symbol}")
             
-        # Validate and round volume
         vmin = float(getattr(info, "volume_min", 0.01) or 0.01)
         vstep = float(getattr(info, "volume_step", 0.01) or 0.01)
         vmax = float(getattr(info, "volume_max", 100.0) or 100.0)
         
         volume = min(max(mt5_bridge._round_step(abs(quantity), vstep), vmin), vmax)
         
-        # Determine order type
         mt5_order_type = self.mt5.ORDER_TYPE_BUY if side.lower() == "buy" else self.mt5.ORDER_TYPE_SELL
         
-        # Get current price for arrival tracking
         tick = self.mt5.symbol_info_tick(mt5_symbol)
         if not tick:
             raise RuntimeError(f"Cannot get tick data for {mt5_symbol}")
             
         arrival_price = float(tick.ask if side.lower() == "buy" else tick.bid)
         
-        # Build request
         request = {
             "action": self.mt5.TRADE_ACTION_DEAL,
             "symbol": mt5_symbol,
@@ -139,17 +139,14 @@ class MT5Broker(Broker):
         else:
             raise ValueError(f"Unsupported order type: {order_type}")
         
-        # Send order
         result = self.mt5.order_send(request)
         
         if result is None:
             raise RuntimeError("MT5 order_send returned None")
             
-        # Check result
         if result.retcode != self.mt5.TRADE_RETCODE_DONE:
             error_msg = f"Order failed. Code: {result.retcode}, Comment: {result.comment}"
             
-            # Send alert if available
             try:
                 from openquant.utils.alerts import send_alert
                 send_alert(
@@ -157,15 +154,16 @@ class MT5Broker(Broker):
                     body=error_msg,
                     severity="ERROR"
                 )
-            except Exception:
-                pass
+            except ImportError as e:
+                logger.debug(f"Alerts module not available: {e}")
+            except Exception as e:
+                logger.warning(f"Failed to send order failure alert: {e}")
                 
             raise RuntimeError(error_msg)
         
-        # Check for high slippage
         if result.price > 0 and arrival_price > 0:
             slippage_pct = abs(result.price - arrival_price) / arrival_price
-            if slippage_pct > 0.001:  # 0.1% threshold
+            if slippage_pct > 0.001:
                 try:
                     from openquant.utils.alerts import send_alert
                     send_alert(
@@ -173,10 +171,11 @@ class MT5Broker(Broker):
                         body=f"Slippage {slippage_pct:.4%}. Expected {arrival_price}, Got {result.price}",
                         severity="WARNING"
                     )
-                except Exception:
-                    pass
+                except ImportError as e:
+                    logger.debug(f"Alerts module not available: {e}")
+                except Exception as e:
+                    logger.warning(f"Failed to send slippage alert: {e}")
         
-        # Log to TCA if available
         if self.tca:
             try:
                 self.tca.log_order(
@@ -187,16 +186,17 @@ class MT5Broker(Broker):
                     arrival_price=arrival_price
                 )
                 
-                # Immediately update with fill if order is filled
                 if result.retcode == self.mt5.TRADE_RETCODE_DONE and result.price > 0:
                     self.tca.update_fill(
                         order_id=str(result.order),
                         fill_price=float(result.price),
                         fill_qty=volume,
-                        fee=0.0  # MT5 doesn't expose commission in result, would need to query separately
+                        fee=0.0
                     )
-            except Exception:
-                pass
+            except AttributeError as e:
+                logger.warning(f"TCA logging failed - invalid method call: {e}")
+            except Exception as e:
+                logger.warning(f"Failed to log order to TCA: {e}")
         
         return {
             "id": str(result.order),

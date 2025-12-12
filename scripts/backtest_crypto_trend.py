@@ -14,6 +14,10 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 import json
+import logging
+
+logging.basicConfig(level=logging.WARNING, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 class CryptoTrend:
     def get_signal(self, df: pd.DataFrame) -> dict:
@@ -51,14 +55,19 @@ def run_backtest():
     print("₿ CRYPTO TREND STRATEGY")
     print("=" * 70)
     
-    # Download
-    import yfinance as yf
+    try:
+        import yfinance as yf
+    except ImportError as e:
+        logger.error(f"Failed to import yfinance: {e}")
+        return
+    
     data = {}
     for sym in ["BTC-USD", "ETH-USD", "SOL-USD"]:
         try:
             df = yf.Ticker(sym).history(period="1y", interval="1h")
             if not df.empty: data[sym] = df
-        except: pass
+        except Exception as e:
+            logger.warning(f"Failed to download {sym}: {e}")
         
     strategy = CryptoTrend()
     trades = []

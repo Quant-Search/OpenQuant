@@ -6,12 +6,14 @@ and regime-dependent strategy selection.
 """
 import pandas as pd
 import numpy as np
+import logging
 from typing import List, Dict, Any, Optional, Tuple
 from collections import deque
 
 from openquant.backtest.metrics import sharpe
 from openquant.evaluation.regime import compute_regime_features
 
+logger = logging.getLogger(__name__)
 
 class StrategyMixer:
     """
@@ -104,8 +106,16 @@ class StrategyMixer:
                 
                 self._update_returns_history(i, strat_ret)
                 
+            except AttributeError as e:
+                logger.error(f"Strategy {i} missing generate_signals method: {e}")
+                strategy_signals.append(pd.Series(0, index=df.index))
+                strategy_returns.append(pd.Series(0, index=df.index))
+            except (KeyError, ValueError) as e:
+                logger.warning(f"Strategy {i} signal generation failed with data error: {e}")
+                strategy_signals.append(pd.Series(0, index=df.index))
+                strategy_returns.append(pd.Series(0, index=df.index))
             except Exception as e:
-                print(f"Strategy {i} failed: {e}")
+                logger.error(f"Strategy {i} failed with unexpected error: {e}", exc_info=True)
                 strategy_signals.append(pd.Series(0, index=df.index))
                 strategy_returns.append(pd.Series(0, index=df.index))
         
@@ -188,7 +198,7 @@ class StrategyMixer:
             else:
                 self.correlation_matrix = None
         except Exception as e:
-            print(f"Correlation matrix calculation failed: {e}")
+            logger.warning(f"Correlation matrix calculation failed: {e}")
             self.correlation_matrix = None
 
     def _apply_correlation_adjustment(self):
@@ -317,14 +327,18 @@ class StrategyMixer:
         """
         try:
             from scipy.optimize import minimize
-        except ImportError:
-            print("scipy not installed, skipping optimization.")
+        except ImportError as e:
+            logger.warning(f"scipy not installed, skipping weight optimization: {e}")
             return
 
         returns_list = []
         valid_indices = []
         
-        market_ret = df['Close'].pct_change().fillna(0)
+        try:
+            market_ret = df['Close'].pct_change().fillna(0)
+        except KeyError as e:
+            logger.error(f"Missing 'Close' column in dataframe: {e}")
+            return
         
         for i, strat in enumerate(self.strategies):
             try:
@@ -332,13 +346,17 @@ class StrategyMixer:
                 sig = sig.clip(-1, 1).fillna(0)
                 
                 strat_ret = sig.shift(1).fillna(0) * market_ret
-                
                 returns_list.append(strat_ret)
                 valid_indices.append(i)
+            except AttributeError as e:
+                logger.error(f"Strategy {i} missing generate_signals method: {e}")
+            except (KeyError, ValueError) as e:
+                logger.warning(f"Strategy {i} optimization failed with data error: {e}")
             except Exception as e:
-                print(f"Strategy {i} optimization failed: {e}")
+                logger.error(f"Strategy {i} optimization failed with unexpected error: {e}", exc_info=True)
         
         if not returns_list:
+            logger.warning("No valid strategy returns for optimization")
             return
 
         returns_df = pd.DataFrame(returns_list).T.fillna(0)
@@ -377,11 +395,15 @@ class StrategyMixer:
                 if s > 0:
                     self.weights = [w/s for w in new_weights]
                 
-                print(f"Optimized Weights: {[f'{w:.2f}' for w in self.weights]}")
+                logger.info(f"Optimized Weights: {[f'{w:.2f}' for w in self.weights]}")
             else:
-                print(f"Optimization failed: {result.message}")
+                logger.warning(f"Optimization failed: {result.message}")
+        except ValueError as e:
+            logger.error(f"Optimization value error: {e}")
+        except RuntimeError as e:
+            logger.error(f"Optimization runtime error: {e}")
         except Exception as e:
-            print(f"Optimization error: {e}")
+            logger.error(f"Unexpected optimization error: {e}", exc_info=True)
 
     def optimize_weights_with_correlation(self, df: pd.DataFrame, correlation_penalty: float = 0.5):
         """
@@ -394,14 +416,18 @@ class StrategyMixer:
         """
         try:
             from scipy.optimize import minimize
-        except ImportError:
-            print("scipy not installed, skipping optimization.")
+        except ImportError as e:
+            logger.warning(f"scipy not installed, skipping correlation optimization: {e}")
             return
 
         returns_list = []
         valid_indices = []
         
-        market_ret = df['Close'].pct_change().fillna(0)
+        try:
+            market_ret = df['Close'].pct_change().fillna(0)
+        except KeyError as e:
+            logger.error(f"Missing 'Close' column in dataframe: {e}")
+            return
         
         for i, strat in enumerate(self.strategies):
             try:
@@ -412,10 +438,15 @@ class StrategyMixer:
                 
                 returns_list.append(strat_ret)
                 valid_indices.append(i)
+            except AttributeError as e:
+                logger.error(f"Strategy {i} missing generate_signals method: {e}")
+            except (KeyError, ValueError) as e:
+                logger.warning(f"Strategy {i} optimization failed with data error: {e}")
             except Exception as e:
-                print(f"Strategy {i} optimization failed: {e}")
+                logger.error(f"Strategy {i} optimization failed with unexpected error: {e}", exc_info=True)
         
         if not returns_list or len(returns_list) < 2:
+            logger.warning("Not enough valid strategy returns for correlation optimization")
             return
 
         returns_df = pd.DataFrame(returns_list).T.fillna(0)
@@ -462,8 +493,12 @@ class StrategyMixer:
                 if s > 0:
                     self.weights = [w/s for w in new_weights]
                 
-                print(f"Optimized Weights (with correlation penalty): {[f'{w:.2f}' for w in self.weights]}")
+                logger.info(f"Optimized Weights (with correlation penalty): {[f'{w:.2f}' for w in self.weights]}")
             else:
-                print(f"Optimization failed: {result.message}")
+                logger.warning(f"Optimization failed: {result.message}")
+        except ValueError as e:
+            logger.error(f"Optimization value error: {e}")
+        except RuntimeError as e:
+            logger.error(f"Optimization runtime error: {e}")
         except Exception as e:
-            print(f"Optimization error: {e}")
+            logger.error(f"Unexpected optimization error: {e}", exc_info=True)
