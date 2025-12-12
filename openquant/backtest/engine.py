@@ -1,9 +1,11 @@
 """Minimal vectorized backtest engine for long/flat signals."""
 from __future__ import annotations
+
 from dataclasses import dataclass
-from typing import Optional, Dict, Callable
-import pandas as pd
+from typing import Any
+
 import numpy as np
+import pandas as pd
 
 from ..utils.logging import get_logger
 from .cost_model import SpreadSchedule, MarketImpactModel, TickRounder, TransactionCostModel
@@ -11,7 +13,6 @@ from ..risk.adaptive_sizing import AdaptiveSizer, kelly_criterion, volatility_ta
 
 LOGGER = get_logger(__name__)
 
-# Lazy import GPU backtest (peut ne pas être disponible)
 try:
     from .gpu_backtest import backtest_signals_gpu, is_gpu_backtest_available
     GPU_AVAILABLE = is_gpu_backtest_available()
@@ -20,20 +21,19 @@ except ImportError:
     backtest_signals_gpu = None
 
 
-
 @dataclass
 class BacktestResult:
     equity_curve: pd.Series
     returns: pd.Series
     positions: pd.Series
     trades: pd.Series
-    trade_details: Optional[pd.DataFrame] = None
+    trade_details: pd.DataFrame | None = None
 
 
 def calculate_tod_spread(
     timestamps: pd.DatetimeIndex,
     base_spread_bps: float,
-    tod_multipliers: Optional[Dict[int, float]] = None
+    tod_multipliers: dict[int, float] | None = None
 ) -> pd.Series:
     """Calculate time-of-day dependent spread.
     
@@ -220,7 +220,7 @@ def calculate_dynamic_funding_rate(
     timestamps: pd.DatetimeIndex,
     positions: pd.Series,
     prices: pd.Series,
-    index_prices: Optional[pd.Series] = None,
+    index_prices: pd.Series | None = None,
     base_funding_bps: float = 1.0,
     funding_interval_hours: int = 8,
     premium_sensitivity: float = 0.1
@@ -383,10 +383,10 @@ def backtest_signals(
     fee_bps: float = 1.0,
     slippage_bps: float = 0.0,
     weight: float = 1.0,
-    stop_loss_atr: float = None,
-    take_profit_atr: float = None,
+    stop_loss_atr: float | None = None,
+    take_profit_atr: float | None = None,
     spread_bps: float = 0.0,
-    leverage: float = 1.0,  # Forex leverage (1x = crypto, 50x = typical Forex)
+    leverage: float = 1.0,
     swap_long: float = 0.0,
     swap_short: float = 0.0,
     funding_bps_long: float = 0.0,
@@ -460,9 +460,8 @@ def backtest_signals(
     lev = max(1.0, float(leverage))
 
     px = df["Close"].astype(float)
-    # Allow float signals for position sizing (e.g. 0.5, -0.2)
     sig = signals.reindex(px.index).fillna(0).astype(float)
-    sig = sig.clip(-1.0, 1.0)  # Ensure valid range [-1, 1]
+    sig = sig.clip(-1.0, 1.0)
 
     # Calculate dynamic position sizes based on sizing_method
     position_sizes = _calculate_position_sizes(
@@ -476,7 +475,7 @@ def backtest_signals(
     )
 
     # Calculate ATR if SL/TP is enabled
-    atr = None
+    atr: pd.Series | None = None
     if stop_loss_atr is not None or take_profit_atr is not None:
         if "High" in df.columns and "Low" in df.columns:
             high = df["High"].astype(float)
@@ -488,7 +487,6 @@ def backtest_signals(
             ], axis=1).max(axis=1)
             atr = tr.rolling(14).mean()
         else:
-            # Fallback: use simple volatility
             atr = px.pct_change().rolling(14).std() * px
 
     ret = px.pct_change(fill_method=None).fillna(0.0)
@@ -497,47 +495,38 @@ def backtest_signals(
     
     # SL/TP Logic: Modify position based on intraday price movements
     if stop_loss_atr or take_profit_atr:
-        # Convert to numpy for speed
         px_arr = px.values
         pos_arr = pos.values
         atr_arr = atr.values if atr is not None else np.zeros_like(px_arr)
-        
-        entry_price = 0.0
-        sl_price = -1.0
-        tp_price = float('inf')
-        
-        # We need to iterate because exit depends on entry state
-        # Using numpy iteration is faster than pandas iloc
+
+        entry_price: float = 0.0
+        sl_price: float = -1.0
+        tp_price: float = float('inf')
+
         n = len(px_arr)
         for i in range(1, n):
             curr_pos = pos_arr[i]
             prev_pos = pos_arr[i-1]
-            
+
             if curr_pos == 1 and prev_pos == 0:
-                # New entry
-                entry_price = px_arr[i-1] # Entry at previous close (signal generation) or open? 
-                # Standard assumption: Signal at close, trade at close (or next open). 
-                # Here we use previous close as entry reference for SL/TP calculation.
-                
+                entry_price = px_arr[i-1]
+
                 if stop_loss_atr:
                     sl_price = entry_price - stop_loss_atr * atr_arr[i-1]
                 else:
                     sl_price = -float('inf')
-                    
+
                 if take_profit_atr:
                     tp_price = entry_price + take_profit_atr * atr_arr[i-1]
                 else:
                     tp_price = float('inf')
-                    
+
             elif curr_pos == 1:
-                # Check SL hit
                 if stop_loss_atr and px_arr[i] <= sl_price:
-                    pos_arr[i] = 0  # Force exit
-                # Check TP hit
+                    pos_arr[i] = 0
                 elif take_profit_atr and px_arr[i] >= tp_price:
-                    pos_arr[i] = 0  # Force exit
-        
-        # Update pos series from modified array
+                    pos_arr[i] = 0
+
         pos = pd.Series(pos_arr, index=px.index)
 
     pos_change = pos.diff().abs().fillna(pos.abs())
@@ -605,17 +594,11 @@ def backtest_signals(
         else:
             slippage_cost = pos_change * lev * (slippage_bps / 10000.0) if slippage_bps > 0 else 0.0
 
-    # Swap Cost Calculation (Overnight holding)
-    # Identify days where position was held overnight (23:59 -> 00:00)
-    # Simplified: Apply swap if position held at end of bar and bar crosses day boundary
-    # For 1h/4h data, this approximates daily rollover
-    swap_cost = pd.Series(0.0, index=px.index)
+    pd.Series(0.0, index=px.index)
+    swap_impact: pd.Series | float
     if (swap_long != 0.0 or swap_short != 0.0) or (funding_bps_long != 0.0 or funding_bps_short != 0.0):
-        # Detect day change
-        # Create a series of day values, shift it, and compare
         day_series = pd.Series(px.index.day, index=px.index)
         day_shifted = day_series.shift(1)
-        # Fill NaN with same day (first row won't trigger day change)
         day_shifted = day_shifted.fillna(day_series.iloc[0])
         day_change = day_series != day_shifted
         # If position held during day change, apply swap
@@ -642,11 +625,12 @@ def backtest_signals(
         # Cost = -1 * Swap Rate (if swap is negative, cost is positive)
         # Gain = -1 * Swap Rate (if swap is positive, cost is negative -> gain)
         
+
         s_long = -1 * swap_long * pip_value / px
         s_short = -1 * swap_short * pip_value / px
         f_long = -1 * (funding_bps_long / 10000.0)
         f_short = -1 * (funding_bps_short / 10000.0)
-        
+
         swap_impact = pd.Series(0.0, index=px.index)
         swap_impact += (pos > 0) * day_change * s_long * lev
         swap_impact += (pos < 0) * day_change * s_short * lev
@@ -659,6 +643,7 @@ def backtest_signals(
     else:
         swap_impact = 0.0
 
+    impact_cost: pd.Series | float
     # Enhanced Market Impact model for large orders
     if use_market_impact and "Volume" in df.columns:
         volumes = df["Volume"].astype(float)
@@ -697,10 +682,11 @@ def backtest_signals(
     equity = (1.0 + strat_ret).cumprod()
 
     trades = pos_change
+    trade_details: pd.DataFrame | None = None
     try:
         entries = (pos_change > 0) & (pos > 0)
         exits = (pos_change > 0) & (pos == 0)
-        td_rows = []
+        td_rows: list[dict[str, Any]] = []
         for i, ts in enumerate(px.index):
             if entries.iloc[i]:
                 td_rows.append({
@@ -723,8 +709,12 @@ def backtest_signals(
     return BacktestResult(equity_curve=equity, returns=strat_ret, positions=pos, trades=trades, trade_details=trade_details)
 
 
-def summarize_performance(result: BacktestResult, freq: str = "1h") -> dict:
-    from .metrics import sharpe as _sharpe, sortino as _sortino, max_drawdown as _mdd, win_rate as _wr, profit_factor as _pf
+def summarize_performance(result: BacktestResult, freq: str = "1h") -> dict[str, float]:
+    from .metrics import max_drawdown as _mdd
+    from .metrics import profit_factor as _pf
+    from .metrics import sharpe as _sharpe
+    from .metrics import sortino as _sortino
+    from .metrics import win_rate as _wr
     s = float(_sharpe(result.returns, freq=freq))
     so = float(_sortino(result.returns, freq=freq))
     dd = float(_mdd(result.equity_curve))
@@ -743,8 +733,7 @@ def sharpe(returns: pd.Series, freq: str = "1h", risk_free_rate: float = 0.0) ->
     """Calculate annualized Sharpe Ratio."""
     if returns.empty:
         return 0.0
-    
-    # Annualization factor
+
     if freq == "1h":
         factor = (24 * 365) ** 0.5
     elif freq == "4h":
@@ -752,46 +741,45 @@ def sharpe(returns: pd.Series, freq: str = "1h", risk_free_rate: float = 0.0) ->
     elif freq == "1d":
         factor = 365 ** 0.5
     else:
-        factor = 252 ** 0.5 # Default to trading days
-        
+        factor = 252 ** 0.5
+
     mean_ret = returns.mean()
     std_ret = returns.std()
-    
+
     if std_ret == 0:
         return 0.0
-        
-    return factor * (mean_ret - risk_free_rate) / std_ret
+
+    return float(factor * (mean_ret - risk_free_rate) / std_ret)
 
 
 def auto_backtest(
     df: pd.DataFrame,
     signals: pd.Series,
     use_gpu: bool = True,
-    **kwargs
+    **kwargs: Any
 ) -> BacktestResult:
     """Backtest automatique avec sélection GPU/CPU.
-    
+
     Wrapper intelligent qui choisit automatiquement GPU si disponible,
     sinon fallback sur CPU. Permet de maximiser performance sans
     se soucier de l'environnement d'exécution.
-    
+
     Args:
         df: OHLCV DataFrame
         signals: Series de signaux {-1, 0, 1}
         use_gpu: Si True, utilise GPU si disponible (default: True)
         **kwargs: Arguments passés à backtest_signals(_gpu)
-        
+
     Returns:
         BacktestResult
-        
+
     Example:
         >>> # Utilise GPU si disponible, sinon CPU automatiquement
         >>> result = auto_backtest(df, signals, fee_bps=1.0)
     """
-    # Détermine si on utilise GPU
     should_use_gpu = use_gpu and GPU_AVAILABLE
-    
-    if should_use_gpu:
+
+    if should_use_gpu and backtest_signals_gpu is not None:
         LOGGER.debug("Using GPU-accelerated backtest")
         return backtest_signals_gpu(df=df, signals=signals, **kwargs)
     else:

@@ -4,16 +4,20 @@ Combines multiple strategies into a single portfolio strategy using weighted vot
 Enhanced with dynamic weight adjustment, correlation-aware portfolio construction,
 and regime-dependent strategy selection.
 """
-import pandas as pd
-import numpy as np
-import logging
-from typing import List, Dict, Any, Optional, Tuple
+from __future__ import annotations
+
+from typing import Any
 from collections import deque
+import logging
+
+import numpy as np
+import pandas as pd
 
 from openquant.backtest.metrics import sharpe
 from openquant.evaluation.regime import compute_regime_features
 
 logger = logging.getLogger(__name__)
+
 
 class StrategyMixer:
     """
@@ -24,8 +28,8 @@ class StrategyMixer:
     """
     def __init__(
         self, 
-        strategies: List[Any], 
-        weights: List[float] = None,
+        strategies: list[Any], 
+        weights: list[float] | None = None,
         enable_dynamic_weights: bool = True,
         enable_correlation_filter: bool = True,
         enable_regime_selection: bool = True,
@@ -34,7 +38,7 @@ class StrategyMixer:
         sharpe_lookback: int = 50,
         min_weight: float = 0.0,
         max_weight: float = 0.5,
-    ):
+    ) -> None:
         """
         Args:
             strategies: List of instantiated strategy objects (must have generate_signals method).
@@ -48,7 +52,7 @@ class StrategyMixer:
             min_weight: Minimum weight for any strategy.
             max_weight: Maximum weight for any strategy.
         """
-        self.strategies = strategies
+        self.strategies: list[Any] = strategies
         self.enable_dynamic_weights = enable_dynamic_weights
         self.enable_correlation_filter = enable_correlation_filter
         self.enable_regime_selection = enable_regime_selection
@@ -59,7 +63,7 @@ class StrategyMixer:
         self.max_weight = max_weight
         
         if weights is None:
-            self.weights = [1.0 / len(strategies)] * len(strategies)
+            self.weights: list[float] = [1.0 / len(strategies)] * len(strategies)
         else:
             s = sum(weights)
             if s == 0:
@@ -67,10 +71,10 @@ class StrategyMixer:
             else:
                 self.weights = [w / s for w in weights]
         
-        self.returns_history: List[deque] = [deque(maxlen=rolling_window) for _ in strategies]
-        self.sharpe_history: List[float] = [0.0] * len(strategies)
-        self.correlation_matrix: Optional[pd.DataFrame] = None
-        self.regime_scores: Dict[str, List[float]] = {
+        self.returns_history: list[deque] = [deque(maxlen=rolling_window) for _ in strategies]
+        self.sharpe_history: list[float] = [0.0] * len(strategies)
+        self.correlation_matrix: pd.DataFrame | None = None
+        self.regime_scores: dict[str, list[float]] = {
             'trending': [1.0] * len(strategies),
             'ranging': [1.0] * len(strategies),
             'high_vol': [1.0] * len(strategies),
@@ -90,8 +94,8 @@ class StrategyMixer:
             regime_info = compute_regime_features(df)
         
         combined_signal = pd.Series(0.0, index=df.index)
-        strategy_signals = []
-        strategy_returns = []
+        strategy_signals: list[pd.Series] = []
+        strategy_returns: list[pd.Series] = []
         
         market_ret = df['Close'].pct_change().fillna(0)
         
@@ -132,21 +136,21 @@ class StrategyMixer:
         for i, sig in enumerate(strategy_signals):
             combined_signal += sig * self.weights[i]
         
-        threshold = 0.2
+        threshold: float = 0.2
         final_signal = pd.Series(0, index=df.index)
         final_signal[combined_signal > threshold] = 1
         final_signal[combined_signal < -threshold] = -1
-        
+
         return final_signal
 
-    def _update_returns_history(self, strategy_idx: int, returns: pd.Series):
+    def _update_returns_history(self, strategy_idx: int, returns: pd.Series) -> None:
         """Update rolling returns history for a strategy."""
         recent_returns = returns.tail(self.rolling_window).values
         for ret in recent_returns:
             if not np.isnan(ret) and not np.isinf(ret):
                 self.returns_history[strategy_idx].append(ret)
 
-    def _calculate_rolling_sharpe(self, returns: pd.Series, lookback: int = None) -> float:
+    def _calculate_rolling_sharpe(self, returns: pd.Series, lookback: int | None = None) -> float:
         """Calculate rolling Sharpe ratio for a strategy."""
         if lookback is None:
             lookback = self.sharpe_lookback
@@ -160,12 +164,12 @@ class StrategyMixer:
         except Exception:
             return 0.0
 
-    def _update_dynamic_weights(self, strategy_returns: List[pd.Series]):
+    def _update_dynamic_weights(self, strategy_returns: list[pd.Series]) -> None:
         """
         Update weights based on rolling Sharpe ratios.
         Strategies with higher recent Sharpe get higher weights.
         """
-        sharpe_ratios = []
+        sharpe_ratios: list[float] = []
         
         for i, strat_ret in enumerate(strategy_returns):
             if len(self.returns_history[i]) >= 10:
@@ -187,7 +191,7 @@ class StrategyMixer:
         if total_weight > 0:
             self.weights = (raw_weights / total_weight).tolist()
 
-    def _update_correlation_matrix(self, strategy_returns: List[pd.Series]):
+    def _update_correlation_matrix(self, strategy_returns: list[pd.Series]) -> None:
         """Calculate correlation matrix between strategy returns."""
         try:
             returns_df = pd.DataFrame(strategy_returns).T
@@ -201,7 +205,7 @@ class StrategyMixer:
             logger.warning(f"Correlation matrix calculation failed: {e}")
             self.correlation_matrix = None
 
-    def _apply_correlation_adjustment(self):
+    def _apply_correlation_adjustment(self) -> None:
         """
         Adjust weights to penalize highly correlated strategies.
         Promotes diversification.
@@ -229,7 +233,7 @@ class StrategyMixer:
         if total_weight > 0:
             self.weights = (adjusted_weights / total_weight).tolist()
 
-    def _apply_regime_adjustment(self, regime_info: Dict[str, float]):
+    def _apply_regime_adjustment(self, regime_info: dict[str, float]) -> None:
         """
         Adjust weights based on market regime.
         Different strategies perform better in different regimes.
@@ -272,7 +276,7 @@ class StrategyMixer:
         ranging_score: float = 1.0,
         high_vol_score: float = 1.0,
         low_vol_score: float = 1.0
-    ):
+    ) -> None:
         """
         Set regime-specific performance scores for a strategy.
         Scores > 1.0 indicate the strategy performs well in that regime.
@@ -298,7 +302,7 @@ class StrategyMixer:
         Returns:
             DataFrame with columns: weight, sharpe, avg_return
         """
-        stats = []
+        stats: list[dict[str, Any]] = []
         for i in range(len(self.strategies)):
             if len(self.returns_history[i]) > 0:
                 returns_series = pd.Series(list(self.returns_history[i]))
@@ -316,11 +320,11 @@ class StrategyMixer:
         
         return pd.DataFrame(stats)
 
-    def get_correlation_matrix(self) -> Optional[pd.DataFrame]:
+    def get_correlation_matrix(self) -> pd.DataFrame | None:
         """Get the current correlation matrix between strategies."""
         return self.correlation_matrix
 
-    def optimize_weights(self, df: pd.DataFrame):
+    def optimize_weights(self, df: pd.DataFrame) -> None:
         """
         Find optimal weights based on historical performance (Sharpe).
         Uses scipy.optimize to maximize Portfolio Sharpe Ratio.
@@ -331,8 +335,8 @@ class StrategyMixer:
             logger.warning(f"scipy not installed, skipping weight optimization: {e}")
             return
 
-        returns_list = []
-        valid_indices = []
+        returns_list: list[pd.Series] = []
+        valid_indices: list[int] = []
         
         try:
             market_ret = df['Close'].pct_change().fillna(0)
@@ -346,6 +350,7 @@ class StrategyMixer:
                 sig = sig.clip(-1, 1).fillna(0)
                 
                 strat_ret = sig.shift(1).fillna(0) * market_ret
+
                 returns_list.append(strat_ret)
                 valid_indices.append(i)
             except AttributeError as e:
@@ -360,13 +365,13 @@ class StrategyMixer:
             return
 
         returns_df = pd.DataFrame(returns_list).T.fillna(0)
-        
-        def neg_sharpe(weights):
+
+        def neg_sharpe(weights: np.ndarray) -> float:
             port_ret = (returns_df * weights).sum(axis=1)
-            
+
             mean_ret = port_ret.mean()
             std_ret = port_ret.std()
-            
+
             if std_ret == 0:
                 return 0.0
             
@@ -376,7 +381,7 @@ class StrategyMixer:
         constraints = ({'type': 'eq', 'fun': lambda x: np.sum(x) - 1})
         bounds = tuple((self.min_weight, self.max_weight) for _ in range(n))
         initial_weights = [1./n] * n
-        
+
         try:
             result = minimize(
                 neg_sharpe, 
@@ -387,8 +392,8 @@ class StrategyMixer:
             )
             
             if result.success:
-                new_weights = [0.0] * len(self.strategies)
-                for idx, weight in zip(valid_indices, result.x):
+                new_weights: list[float] = [0.0] * len(self.strategies)
+                for idx, weight in zip(valid_indices, result.x, strict=False):
                     new_weights[idx] = max(0.0, float(weight))
                 
                 s = sum(new_weights)
@@ -405,7 +410,7 @@ class StrategyMixer:
         except Exception as e:
             logger.error(f"Unexpected optimization error: {e}", exc_info=True)
 
-    def optimize_weights_with_correlation(self, df: pd.DataFrame, correlation_penalty: float = 0.5):
+    def optimize_weights_with_correlation(self, df: pd.DataFrame, correlation_penalty: float = 0.5) -> None:
         """
         Find optimal weights considering both Sharpe ratio and correlation penalty.
         Promotes diversification by penalizing correlated strategies.
@@ -420,8 +425,8 @@ class StrategyMixer:
             logger.warning(f"scipy not installed, skipping correlation optimization: {e}")
             return
 
-        returns_list = []
-        valid_indices = []
+        returns_list: list[pd.Series] = []
+        valid_indices: list[int] = []
         
         try:
             market_ret = df['Close'].pct_change().fillna(0)
@@ -452,7 +457,7 @@ class StrategyMixer:
         returns_df = pd.DataFrame(returns_list).T.fillna(0)
         corr_matrix = returns_df.corr().values
         
-        def objective(weights):
+        def objective(weights: np.ndarray) -> float:
             port_ret = (returns_df * weights).sum(axis=1)
             
             mean_ret = port_ret.mean()
@@ -485,8 +490,8 @@ class StrategyMixer:
             )
             
             if result.success:
-                new_weights = [0.0] * len(self.strategies)
-                for idx, weight in zip(valid_indices, result.x):
+                new_weights: list[float] = [0.0] * len(self.strategies)
+                for idx, weight in zip(valid_indices, result.x, strict=False):
                     new_weights[idx] = max(0.0, float(weight))
                 
                 s = sum(new_weights)

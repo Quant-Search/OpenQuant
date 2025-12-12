@@ -32,6 +32,6 @@ warn_unused_ignores = true
 exclude = [
   "AppDir/_internal/",
 ]
-disallow_untyped_defs = false
-disallow_incomplete_defs = false
-check_untyped_defs = false
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
