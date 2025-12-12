@@ -22,6 +22,10 @@ from ..backtest.metrics import sharpe
 class WFOSpec:
     n_splits: int = 4
     train_frac: float = 0.7  # fraction of window used for training
+    use_cpcv: bool = False  # Use Combinatorially Purged CV
+    cpcv_n_test_splits: int = 2
+    cpcv_purge_pct: float = 0.02
+    cpcv_embargo_pct: float = 0.01
 
 
 def _split_windows(index: pd.DatetimeIndex, n_splits: int) -> List[Tuple[pd.Timestamp, pd.Timestamp]]:
@@ -45,9 +49,15 @@ def walk_forward_evaluate(
     weight: float = 1.0,
     wfo: WFOSpec = WFOSpec(),
 ) -> Dict[str, Any]:
-    """Run minimal WFO evaluation and return aggregated metrics.
+    """Run WFO evaluation with optional CPCV and return aggregated metrics.
     Returns dict with keys: test_sharpes (list), mean_test_sharpe, best_params_per_split
     """
+    # Use CPCV if enabled
+    if wfo.use_cpcv:
+        from ..validation.combinatorial_cv import CombinatorialPurgedCV
+        return _walk_forward_cpcv(df, strategy_factory, param_grid, fee_bps, weight, wfo)
+        
+    # Original WFO implementation
     idx = df.index
     splits = _split_windows(idx, wfo.n_splits)
     best_params: List[Dict[str, Any]] = []
@@ -95,6 +105,81 @@ def walk_forward_evaluate(
         test_sharpes.append(float(test_s))
 
     mean_test_sharpe = float(np.mean(test_sharpes)) if test_sharpes else 0.0
+    return {
+        "test_sharpes": test_sharpes,
+        "mean_test_sharpe": mean_test_sharpe,
+        "best_params_per_split": best_params,
+    }
+
+
+def _walk_forward_cpcv(
+    df: pd.DataFrame,
+    strategy_factory,
+    param_grid: Dict[str, Iterable[Any]],
+    fee_bps: float,
+    weight: float,
+    wfo: WFOSpec
+) -> Dict[str, Any]:
+    """WFO using Combinatorially Purged CV."""
+    from ..validation.combinatorial_cv import CombinatorialPurgedCV
+    from ..utils.logging import get_logger
+    
+    LOGGER = get_logger(__name__)
+    
+    cv = CombinatorialPurgedCV(
+        n_splits=wfo.n_splits,
+        n_test_splits=wfo.cpcv_n_test_splits,
+        purge_pct=wfo.cpcv_purge_pct,
+        embargo_pct=wfo.cpcv_embargo_pct
+    )
+    
+    test_sharpes: List[float] = []
+    best_params: List[Dict[str, Any]] = []
+    
+    LOGGER.info("Running CPCV Walk-Forward Optimization...")
+    
+    for train_idx, test_idx in cv.split(df):
+        if len(train_idx) < 20 or len(test_idx) < 5:
+            continue
+            
+        df_train = df.iloc[train_idx]
+        df_test = df.iloc[test_idx]
+        
+        # Grid search on train
+        candidates = list(itertools.product(*param_grid.values()))
+        keys = list(param_grid.keys())
+        best_s = -np.inf
+        best_p = None
+        
+        for combo in candidates:
+            params = dict(zip(keys, combo))
+            try:
+                strat = strategy_factory(**params)
+                sig = strat.generate_signals(df_train)
+                res = backtest_signals(df_train, sig, fee_bps=fee_bps, weight=weight)
+                s = sharpe(res.returns, freq="1d")
+                if s > best_s:
+                    best_s = s
+                    best_p = params
+            except Exception:
+                continue
+                
+        if best_p is None:
+            continue
+            
+        best_params.append(best_p)
+        
+        # Evaluate on test
+        strat = strategy_factory(**best_p)
+        sig = strat.generate_signals(df_test)
+        res = backtest_signals(df_test, sig, fee_bps=fee_bps, weight=weight)
+        test_s = sharpe(res.returns, freq="1d")
+        test_sharpes.append(float(test_s))
+        
+    mean_test_sharpe = float(np.mean(test_sharpes)) if test_sharpes else 0.0
+    
+    LOGGER.info(f"CPCV completed: {len(test_sharpes)} folds, mean Sharpe: {mean_test_sharpe:.2f}")
+    
     return {
         "test_sharpes": test_sharpes,
         "mean_test_sharpe": mean_test_sharpe,

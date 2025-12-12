@@ -1,0 +1,105 @@
+{
+  "generation": 0,
+  "population": [
+    {
+      "strategy": "test",
+      "params": {
+        "x": 0,
+        "y": 0
+      },
+      "fitness": 0.0,
+      "generation": 0,
+      "parents": null
+    },
+    {
+      "strategy": "test",
+      "params": {
+        "x": 1,
+        "y": 1
+      },
+      "fitness": 2.0,
+      "generation": 0,
+      "parents": null
+    },
+    {
+      "strategy": "test",
+      "params": {
+        "x": 2,
+        "y": 2
+      },
+      "fitness": 4.0,
+      "generation": 0,
+      "parents": null
+    },
+    {
+      "strategy": "test",
+      "params": {
+        "x": 3,
+        "y": 3
+      },
+      "fitness": 6.0,
+      "generation": 0,
+      "parents": null
+    },
+    {
+      "strategy": "test",
+      "params": {
+        "x": 4,
+        "y": 4
+      },
+      "fitness": 8.0,
+      "generation": 0,
+      "parents": null
+    },
+    {
+      "strategy": "test",
+      "params": {
+        "x": 5,
+        "y": 5
+      },
+      "fitness": 10.0,
+      "generation": 0,
+      "parents": null
+    },
+    {
+      "strategy": "test",
+      "params": {
+        "x": 6,
+        "y": 6
+      },
+      "fitness": 12.0,
+      "generation": 0,
+      "parents": null
+    },
+    {
+      "strategy": "test",
+      "params": {
+        "x": 7,
+        "y": 7
+      },
+      "fitness": 14.0,
+      "generation": 0,
+      "parents": null
+    },
+    {
+      "strategy": "test",
+      "params": {
+        "x": 8,
+        "y": 8
+      },
+      "fitness": 16.0,
+      "generation": 0,
+      "parents": null
+    },
+    {
+      "strategy": "test",
+      "params": {
+        "x": 9,
+        "y": 9
+      },
+      "fitness": 18.0,
+      "generation": 0,
+      "parents": null
+    }
+  ]
+}

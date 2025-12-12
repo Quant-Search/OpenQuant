@@ -229,6 +229,7 @@ def apply_allocation_to_mt5(
     symmap = _load_symbol_map()
     targets: Dict[str, float] = {}
 
+    alloc_params: Dict[str, Dict[str, float]] = {}
     for entry in allocation:
         sym_b = str(entry.get("symbol", ""))
         w = float(entry.get("weight", 0.0))
@@ -252,6 +253,9 @@ def apply_allocation_to_mt5(
         vol = target_notional / max(1e-9, (contract * price))
         vol = min(max(_round_step(vol, vstep), vmin), vmax)
         targets[sym_mt5] = vol
+        sl = float(entry.get("sl", 0.0))
+        tp = float(entry.get("tp", 0.0))
+        alloc_params[sym_mt5] = {"sl": sl, "tp": tp}
 
     # Compute current -> target deltas and send market orders
     current = positions_by_symbol(mt5)
@@ -277,10 +281,10 @@ def apply_allocation_to_mt5(
             if expected_price > 0:
                 req["price"] = expected_price
         
-        # Add SL/TP if provided in allocation
-        # Entry format: {"symbol": "...", "weight": ..., "sl": 1.2345, "tp": 1.2445}
-        sl = float(entry.get("sl", 0.0))
-        tp = float(entry.get("tp", 0.0))
+        # Add SL/TP if provided in allocation for this symbol
+        params = alloc_params.get(sym, {})
+        sl = float(params.get("sl", 0.0))
+        tp = float(params.get("tp", 0.0))
         if sl > 0:
             req["sl"] = sl
         if tp > 0:

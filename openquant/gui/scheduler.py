@@ -27,19 +27,44 @@ class RobotScheduler:
         self._position_monitor = None
         self._mt5_broker_instance = None
         
+        # Adaptive sizing for profit optimization
+        self._adaptive_sizer = None
+        
+        # Trade filter for regime-aware filtering
+        self._trade_filter = None
+        
+        # Performance tracker
+        self._perf_tracker = None
+        
         # Configuration for the run
         self.run_config: Dict[str, Any] = {
             "top_n": 10,
             "fee_bps": 2.0,
             "slippage_bps": 5.0,
-            "use_mt5": False,
+            "use_mt5": True,
             "mt5_creds": {},
+            "symbols": [
+                "BTC/USDT",
+                "ETH/USDT",
+                "SOL/USDT",
+                "BNB/USDT"
+            ],
+            "auto_apply_actions": True,
+            "apply_actions_to_live": True,
             "position_monitoring": {
                 "enabled": True,
                 "check_interval_seconds": 60,
                 "trailing_activation_bps": 50,
                 "trailing_distance_bps": 30
-            }
+            },
+            # Trading config - using profitable MR strategy settings
+            "aggressive_mode": False,  # Conservative for real trading
+            "max_drawdown": 0.20,
+            "min_probability": 0.62,
+            "strict_session_filter": True,
+            "min_session_quality": 0.6,
+            "use_regime_filter": True,
+            "strategy": "mean_reversion"  # Profitable strategy choice
         }
 
     def start(self, interval_minutes: int = 60, config: Dict[str, Any] = None):
@@ -137,11 +162,33 @@ class RobotScheduler:
         from openquant.risk.circuit_breaker import CIRCUIT_BREAKER
         from openquant.risk.kill_switch import KILL_SWITCH
         from openquant.risk.market_hours import MarketHours, MarketType
+        from openquant.risk.adaptive_sizing import AdaptiveSizer
+        from openquant.trading.trade_filter import TradeFilter, FilterConfig, TradeSignal, FilterResult
+        from openquant.reporting.performance_tracker import PERFORMANCE_TRACKER
         from pathlib import Path
         import json
         import ccxt
 
         cfg = self.run_config
+        
+        # Initialize profit optimization components (once)
+        if self._adaptive_sizer is None:
+            self._adaptive_sizer = AdaptiveSizer(
+                method="kelly",
+                max_drawdown=cfg.get("max_drawdown", 0.50),
+                aggressive_mode=cfg.get("aggressive_mode", True)
+            )
+            LOGGER.info("AdaptiveSizer initialized (aggressive_mode=%s)", cfg.get("aggressive_mode", True))
+            
+        if self._trade_filter is None:
+            filter_cfg = FilterConfig(
+                min_probability=cfg.get("min_probability", 0.60),
+                allow_counter_trend=False
+            )
+            self._trade_filter = TradeFilter(config=filter_cfg)
+            LOGGER.info("TradeFilter initialized (min_prob=%s)", cfg.get("min_probability", 0.60))
+            
+        self._perf_tracker = PERFORMANCE_TRACKER
 
         # 0a. Kill Switch Check (Highest Priority)
         if KILL_SWITCH.is_active():
@@ -158,19 +205,78 @@ class RobotScheduler:
             self.error_message = str(status)
             return
 
-        # 0c. Market Hours Check
-        market_type = MarketType.CRYPTO  # Default to crypto (24/7)
+        preferred_market = MarketType.CRYPTO
+        effective_market = preferred_market
+        effective_exchange = "binance"
         if cfg.get("use_mt5"):
-            market_type = MarketType.FOREX
+            preferred_market = MarketType.FOREX
+            effective_exchange = "mt5"
         elif cfg.get("use_alpaca"):
-            market_type = MarketType.US_STOCKS
+            preferred_market = MarketType.US_STOCKS
+            effective_exchange = "alpaca"
 
-        market_hours = MarketHours(market_type)
-        if not market_hours.is_open():
+        market_hours = MarketHours(preferred_market)
+        mt5_exec_enabled = bool(cfg.get("use_mt5")) and market_hours.is_open()
+        alpaca_exec_enabled = bool(cfg.get("use_alpaca")) and market_hours.is_open()
+        if preferred_market != MarketType.CRYPTO and not market_hours.is_open():
             next_open = market_hours.next_open()
-            LOGGER.info(f"Market closed. Next open: {next_open}")
-            self.status_message = f"Market closed. Opens: {next_open.strftime('%Y-%m-%d %H:%M EST')}"
-            return
+            LOGGER.info(f"Market closed. Switching to crypto. Next {preferred_market.name} open: {next_open}")
+            self.status_message = "Market closed. Trading crypto"
+            effective_market = MarketType.CRYPTO
+            effective_exchange = "binance"
+        else:
+            effective_market = preferred_market
+
+        # Apply live adjustments from diagnostics
+        try:
+            if bool(cfg.get("apply_actions_to_live", True)):
+                from pathlib import Path as _P
+                import json as _json
+                diag = {}
+                cfgp = {"wfo_drop": 0.2, "profit_factor_min": 1.2, "mc_dd_p95_max": 0.25, "p_value_max": 0.10}
+                pth = _P("data/diagnostic_report.json")
+                if pth.exists():
+                    with open(pth, "r") as f:
+                        diag = _json.load(f)
+                pth2 = _P("data/diagnostics_config.json")
+                if pth2.exists():
+                    try:
+                        with open(pth2, "r") as f:
+                            cfgp.update(_json.load(f))
+                    except Exception:
+                        pass
+                agg = diag.get("aggregate", {})
+                mcdd = float(agg.get("mean_mc_dd_p95", 0) or 0)
+                pfm = float(agg.get("mean_profit_factor", 0) or 0)
+                wfo = float(agg.get("mean_wfo_mts", 0) or 0)
+                pval = float(agg.get("median_p_value", 1) or 1)
+                if mcdd > float(cfgp.get("mc_dd_p95_max", 0.25)):
+                    cfg["aggressive_mode"] = False
+                    cfg["max_drawdown"] = min(0.15, float(cfg.get("max_drawdown", 0.20)))
+                if pfm < float(cfgp.get("profit_factor_min", 1.2)):
+                    cfg["min_probability"] = float(min(0.95, float(cfg.get("min_probability", 0.60)) + 0.02))
+                if wfo < float(cfgp.get("wfo_drop", 0.2)) or pval > float(cfgp.get("p_value_max", 0.10)):
+                    cfg["strict_session_filter"] = True
+        except Exception:
+            pass
+
+        # 0d. Session Quality Check
+        try:
+            from openquant.trading.session_optimizer import SessionOptimizer
+            session_opt = SessionOptimizer()
+            session_name, session_quality = session_opt.get_current_session()
+            
+            min_session_quality = cfg.get("min_session_quality", 0.4)
+            
+            if session_quality < min_session_quality:
+                LOGGER.info(f"Low session quality: {session_name} ({session_quality:.0%})")
+                self.status_message = f"Waiting for better session (current: {session_name} {session_quality:.0%})"
+                if cfg.get("strict_session_filter", False) and effective_exchange != "binance":
+                    return
+            else:
+                LOGGER.info(f"Good session: {session_name} ({session_quality:.0%})")
+        except Exception as e:
+            LOGGER.warning(f"Session optimizer error: {e}")
 
         # 0d. Risk Check (Pre-Flight)
         state_path = Path("data")/"paper_state.json"
@@ -202,13 +308,14 @@ class RobotScheduler:
 
         # 1. Research
         LOGGER.info(f"Auto-Pilot: Running Universe Research (top_n={cfg['top_n']})...")
-        if cfg.get("use_mt5"):
-             # Configure MT5 source if needed
-             pass 
-             
-        exchange = "mt5" if cfg.get("use_mt5") else "binance"
+        if cfg.get("use_mt5") and effective_exchange == "mt5":
+            pass
+
+        exchange = effective_exchange
         # Map symbols if using Alpaca (BTC/USD -> BTC/USDT for Binance data)
         symbols = cfg.get("symbols")
+        if symbols is None and exchange == "binance":
+            symbols = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT"]
         if symbols and exchange == "binance":
             mapped_symbols = []
             for s in symbols:
@@ -222,7 +329,8 @@ class RobotScheduler:
             exchange=exchange, 
             top_n=int(cfg["top_n"]), 
             global_trend=global_trend,
-            symbols=symbols
+            symbols=symbols,
+            use_opt_actions=bool(cfg.get("auto_apply_actions", True))
         )
         
         # 2. Load Allocation
@@ -251,6 +359,22 @@ class RobotScheduler:
             export_signals_to_csv(alloc)
         except Exception as e:
             LOGGER.warning(f"Failed to export signals: {e}")
+
+        # 2.6 Live Execution on MT5 (optionnel)
+        try:
+            if mt5_exec_enabled and bool(cfg.get("use_mt5")):
+                from openquant.paper.mt5_bridge import apply_allocation_to_mt5
+                creds = cfg.get("mt5_creds", {})
+                apply_allocation_to_mt5(
+                    alloc,
+                    terminal_path=creds.get("path"),
+                    login=(int(creds["login"]) if creds.get("login") else None),
+                    password=creds.get("password"),
+                    server=creds.get("server")
+                )
+                LOGGER.info("MT5 execution applied successfully")
+        except Exception as e:
+            LOGGER.warning(f"MT5 execution failed: {e}")
 
         # 3. Paper Trading Execution
         LOGGER.info("Auto-Pilot: Executing Paper Trades...")
@@ -308,6 +432,32 @@ class RobotScheduler:
                     px = 0.0
             
             prices[(ex.upper(), sym, tf, strat)] = px
+
+        for k in list(state.holdings.keys()):
+            ex_k, sym_k, tf_k, strat_k = k
+            key = (str(ex_k).upper(), str(sym_k), str(tf_k), str(strat_k))
+            if key in prices and float(prices.get(key, 0.0)) > 0.0:
+                continue
+            ex_l = str(ex_k).lower()
+            px2 = 0.0
+            if ex_l == "mt5" and mt5_broker:
+                try:
+                    tick = mt5_broker.mt5.symbol_info_tick(sym_k)
+                    px2 = float(getattr(tick, "last", 0.0) or getattr(tick, "bid", 0.0) or getattr(tick, "ask", 0.0) or 0.0)
+                except Exception:
+                    px2 = 0.0
+            else:
+                if ex_l not in clients:
+                    try:
+                        clients[ex_l] = getattr(ccxt, ex_l)()
+                    except:
+                        continue
+                try:
+                    t2 = clients[ex_l].fetch_ticker(sym_k)
+                    px2 = float(t2.get("last") or t2.get("close") or 0.0)
+                except Exception:
+                    px2 = 0.0
+            prices[key] = px2
 
         snap = MarketSnapshot(prices=prices)
         
@@ -393,7 +543,7 @@ class RobotScheduler:
         # 4. MT5 Execution (if enabled)
         # 4. MT5 Execution (if enabled)
         # 4. MT5 Execution (if enabled)
-        if cfg.get("use_mt5") and mt5_broker:
+        if mt5_exec_enabled and mt5_broker:
             LOGGER.info("Auto-Pilot: Syncing with MT5...")
             try:
                 # Reuse the broker instance we created for pricing
@@ -567,7 +717,7 @@ class RobotScheduler:
                         LOGGER.error(f"Failed to start position monitor: {e}")
 
         # 5. Alpaca Execution (if enabled)
-        if cfg.get("use_alpaca"):
+        if alpaca_exec_enabled:
             LOGGER.info("Auto-Pilot: Syncing with Alpaca...")
             try:
                 from openquant.broker.alpaca_broker import AlpacaBroker

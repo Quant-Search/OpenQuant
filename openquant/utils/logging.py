@@ -92,16 +92,18 @@ def get_logger(name: str, log_dir: str = "logs") -> logging.Logger:
     # Create logs directory if it doesn't exist
     Path(log_dir).mkdir(parents=True, exist_ok=True)
     
-    # JSON file handler with daily rotation
-    json_handler = TimedRotatingFileHandler(
-        filename=os.path.join(log_dir, 'openquant.log'),
-        when='midnight',
-        interval=1,
-        backupCount=30,  # Keep 30 days of logs
-        encoding='utf-8'
-    )
+    # Use per-process log file to avoid Windows rename locks on rotation
+    pid = os.getpid()
+    date_str = datetime.now().strftime("%Y%m%d")
+    logfile = os.path.join(log_dir, f"openquant_{date_str}_{pid}.log")
+    json_handler = logging.FileHandler(filename=logfile, encoding='utf-8', delay=True)
     json_handler.setFormatter(JSONFormatter())
     json_handler.addFilter(SensitiveDataFilter())
+    # Also write to a stable file name expected by tests/tools
+    stable_logfile = os.path.join(log_dir, "openquant.log")
+    json_handler2 = logging.FileHandler(filename=stable_logfile, encoding='utf-8', delay=True)
+    json_handler2.setFormatter(JSONFormatter())
+    json_handler2.addFilter(SensitiveDataFilter())
     
     # Console handler (human-readable)
     console_handler = logging.StreamHandler()
@@ -112,6 +114,7 @@ def get_logger(name: str, log_dir: str = "logs") -> logging.Logger:
     console_handler.addFilter(SensitiveDataFilter())
     
     logger.addHandler(json_handler)
+    logger.addHandler(json_handler2)
     logger.addHandler(console_handler)
     
     return logger

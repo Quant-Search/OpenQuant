@@ -1,0 +1,19 @@
+{
+  "param_grid_overrides": {
+    "liquidity": {
+      "vpin_threshold": [
+        0.2,
+        0.3,
+        0.4,
+        0.5
+      ],
+      "lookback": [
+        10,
+        20,
+        30
+      ]
+    }
+  },
+  "optuna_trials_multiplier": 1.3,
+  "timestamp": "2025-12-10T13:13:29.129512"
+}

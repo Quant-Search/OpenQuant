@@ -10,6 +10,8 @@ from typing import Dict, Any, Optional
 import os
 import json
 import urllib.request
+import smtplib
+from email.mime.text import MIMEText
 
 from .logging import get_logger
 
@@ -51,6 +53,18 @@ def send_alert(subject: str, body: str, *, severity: str = "INFO", webhook_url: 
         LOGGER.info(log_msg)
 
     if not url:
+        # Try email if configured
+        _send_email(subject, body, severity)
+        # Try SMS/webhook if configured via OPENQUANT_SMS_WEBHOOK
+        sms_url = os.getenv("OPENQUANT_SMS_WEBHOOK")
+        if sms_url:
+            try:
+                data = json.dumps({"text": f"[{severity}] {subject}: {body}"}).encode("utf-8")
+                req = urllib.request.Request(sms_url, data=data, headers={"Content-Type": "application/json"})
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    _ = resp.read()
+            except Exception as e:
+                LOGGER.warning(f"SMS webhook failed: {e}")
         return
     try:
         data = json.dumps({"subject": subject, "body": body, "severity": severity}).encode("utf-8")
@@ -59,4 +73,26 @@ def send_alert(subject: str, body: str, *, severity: str = "INFO", webhook_url: 
             _ = resp.read()
     except Exception as e:
         LOGGER.warning(f"Alert webhook failed: {e}")
+        _send_email(subject, body, severity)
+
+
+def _send_email(subject: str, body: str, severity: str) -> None:
+    host = os.getenv("OPENQUANT_SMTP_HOST")
+    port = int(os.getenv("OPENQUANT_SMTP_PORT", "0") or 0)
+    user = os.getenv("OPENQUANT_SMTP_USER")
+    pwd = os.getenv("OPENQUANT_SMTP_PASS")
+    to_addr = os.getenv("OPENQUANT_SMTP_TO")
+    if not (host and port and user and pwd and to_addr):
+        return
+    try:
+        msg = MIMEText(body, "plain", "utf-8")
+        msg["Subject"] = f"[{severity}] {subject}"
+        msg["From"] = user
+        msg["To"] = to_addr
+        with smtplib.SMTP(host, port, timeout=5) as s:
+            s.starttls()
+            s.login(user, pwd)
+            s.sendmail(user, [to_addr], msg.as_string())
+    except Exception as e:
+        LOGGER.warning(f"SMTP email failed: {e}")
 

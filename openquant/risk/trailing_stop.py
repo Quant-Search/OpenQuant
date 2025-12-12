@@ -47,84 +47,93 @@ class TrailingStopManager:
         self,
         trailing_bps: float = 50.0,
         activation_bps: float = 0.0,
-        min_update_bps: float = 5.0
+        min_update_bps: float = 5.0,
+        atr_multiplier: Optional[float] = None,
+        acceleration_factor: float = 0.0
     ):
         """Initialize the Trailing Stop Manager.
         
         Args:
             trailing_bps: Distance (in basis points) to trail behind the price.
-                         For long: SL = Price × (1 - trailing_bps/10000)
-                         For short: SL = Price × (1 + trailing_bps/10000)
             activation_bps: Minimum profit (in basis points) before trailing starts.
-                           If 0, trailing starts immediately.
             min_update_bps: Minimum change required (in bps) to trigger an SL update.
-                           Prevents excessive updates for tiny price movements.
+            atr_multiplier: If set, uses ATR * multiplier as trailing distance instead of bps.
+            acceleration_factor: If > 0, reduces trailing distance as profit increases.
+                                 New Distance = Base Distance * (1 - acceleration * profit_ratio)
         """
-        self.trailing_bps = trailing_bps  # Distance to trail (e.g., 50 = 0.5%)
-        self.activation_bps = activation_bps  # Min profit to activate (e.g., 20 = 0.2%)
-        self.min_update_bps = min_update_bps  # Min change to update (e.g., 5 = 0.05%)
+        self.trailing_bps = trailing_bps
+        self.activation_bps = activation_bps
+        self.min_update_bps = min_update_bps
+        self.atr_multiplier = atr_multiplier
+        self.acceleration_factor = acceleration_factor
         
     def calculate_new_sl(
         self,
         pos: PositionInfo,
-        current_price: float
+        current_price: float,
+        atr: Optional[float] = None
     ) -> Optional[float]:
         """Calculate new Stop Loss level for a position.
         
-        Returns None if no update is needed.
-        
-        Mathematical Logic:
-        1. Check if position is profitable enough (activation_bps)
-        2. Calculate new SL based on trailing distance
-        3. Only update if new SL improves the current SL by min_update_bps
-        
         Args:
             pos: Position information
-            current_price: Current market price (Ask for Long, Bid for Short)
+            current_price: Current market price
+            atr: Current Average True Range (required if atr_multiplier is set)
             
         Returns:
             New SL level, or None if no update needed
         """
-        is_long = pos.type == 0  # 0 = Buy/Long
+        is_long = pos.type == 0
         
         # Step 1: Check activation threshold
-        # Calculate current profit in basis points
         if is_long:
-            # Long: profit when price > open_price
             profit_bps = ((current_price - pos.open_price) / pos.open_price) * 10000
         else:
-            # Short: profit when price < open_price
             profit_bps = ((pos.open_price - current_price) / pos.open_price) * 10000
             
-        # If profit < activation threshold, don't trail yet
         if profit_bps < self.activation_bps:
             return None
             
-        # Step 2: Calculate new SL based on trailing distance
-        if is_long:
-            # Long: SL trails below the current price
-            new_sl = current_price * (1.0 - self.trailing_bps / 10000.0)
+        # Step 2: Determine trailing distance
+        distance = 0.0
+        
+        if self.atr_multiplier and atr:
+            # ATR-based trailing
+            distance = atr * self.atr_multiplier
+        else:
+            # Percentage-based trailing
+            distance = current_price * (self.trailing_bps / 10000.0)
             
-            # Only update if new SL is higher than current SL (tightening)
+        # Apply acceleration (reduce distance as profit increases)
+        if self.acceleration_factor > 0:
+            # Profit ratio (e.g. 0.01 for 1% profit)
+            profit_ratio = profit_bps / 10000.0
+            # Reduce distance: Distance * (1 - accel * profit)
+            # e.g. accel=5.0, profit=2% -> factor = 1 - 0.1 = 0.9
+            factor = max(0.2, 1.0 - (self.acceleration_factor * profit_ratio))
+            distance *= factor
+            
+        # Step 3: Calculate new SL
+        if is_long:
+            new_sl = current_price - distance
+            
+            # Only update if new SL is higher (tightening)
             if pos.sl > 0 and new_sl <= pos.sl:
                 return None
                 
-            # Check if improvement is significant enough
+            # Check min update
             if pos.sl > 0:
                 improvement_bps = ((new_sl - pos.sl) / pos.sl) * 10000
                 if improvement_bps < self.min_update_bps:
                     return None
-                    
         else:
-            # Short: SL trails above the current price
-            new_sl = current_price * (1.0 + self.trailing_bps / 10000.0)
+            new_sl = current_price + distance
             
-            # Only update if new SL is lower than current SL (tightening)
-            # If current SL is 0 (not set), we can set it
+            # Only update if new SL is lower (tightening)
             if pos.sl > 0 and new_sl >= pos.sl:
                 return None
                 
-            # Check if improvement is significant enough
+            # Check min update
             if pos.sl > 0:
                 improvement_bps = ((pos.sl - new_sl) / pos.sl) * 10000
                 if improvement_bps < self.min_update_bps:

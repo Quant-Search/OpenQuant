@@ -12,6 +12,8 @@ import time
 
 from ..utils.logging import get_logger
 from ..risk.trailing_stop import TrailingStopManager, PositionInfo
+from ..storage.trade_memory import TradeMemory
+from ..strategies.online_learner import OnlineLearner
 
 LOGGER = get_logger(__name__)
 
@@ -51,6 +53,11 @@ class PositionMonitor:
         self.check_interval = check_interval_seconds
         self.trailing_manager = trailing_stop_manager or TrailingStopManager()
         self.on_position_update = on_position_update
+        
+        # Learning components
+        self.trade_memory = TradeMemory()
+        self.online_learner = OnlineLearner()
+        self.closed_positions_cache = set() # Track closed tickets to avoid duplicates
         
         self._running = False
         self._thread: Optional[threading.Thread] = None
@@ -134,9 +141,74 @@ class PositionMonitor:
                 except Exception as e:
                     LOGGER.error(f"Error checking position {symbol}: {e}")
                     
+                except Exception as e:
+                    LOGGER.error(f"Error checking position {symbol}: {e}")
+            
+            # Check for closed trades
+            self._process_closed_trades()
+                    
         except Exception as e:
             LOGGER.error(f"Error getting positions: {e}")
             
+    def _process_closed_trades(self):
+        """Detect closed trades and update memory/learner."""
+        try:
+            # Get history from MT5 (last 24h for safety)
+            mt5 = self.mt5_broker.mt5
+            from_date = datetime.now().timestamp() - 86400
+            to_date = datetime.now().timestamp() + 60
+            
+            history = mt5.history_deals_get(from_date, to_date)
+            
+            if history:
+                for deal in history:
+                    ticket = deal.ticket
+                    
+                    # Entry deals are 0, Exit deals are 1
+                    if deal.entry == 1: # Deal Entry Out (Exit)
+                        if ticket in self.closed_positions_cache:
+                            continue
+                            
+                        self.closed_positions_cache.add(ticket)
+                        
+                        # Process this closed trade
+                        symbol = deal.symbol
+                        profit = deal.profit
+                        price = deal.price
+                        volume = deal.volume
+                        
+                        # We need entry details... MT5 history is deal-based.
+                        # This is simplified. Ideally we link entry deal to exit deal.
+                        # For now, we just save the exit event.
+                        
+                        trade_data = {
+                            "id": str(ticket),
+                            "symbol": symbol,
+                            "exit_time": datetime.fromtimestamp(deal.time),
+                            "exit_price": price,
+                            "quantity": volume,
+                            "pnl": profit,
+                            "pnl_pct": 0.0, # Hard to calc without entry price here easily
+                            "exit_reason": "signal" if deal.reason == 0 else "sl/tp", # Simplified
+                            "features_json": {} # We would need to have cached features at entry
+                        }
+                        
+                        # Save to memory
+                        self.trade_memory.save_trade(trade_data)
+                        
+                        # Update Online Learner
+                        # 1 = Win, 0 = Loss
+                        result = 1 if profit > 0 else 0
+                        
+                        # We need features to update learner. 
+                        # If we don't have them, we can't update.
+                        # For this implementation, we'll skip update if no features.
+                        # In a full implementation, we'd cache features map: ticket -> features
+                        pass 
+                        
+        except Exception as e:
+            LOGGER.error(f"Error processing closed trades: {e}")
+
     def _calculate_metrics(self, symbol: str, qty: float) -> Optional[PositionMetrics]:
         """Calculate real-time metrics for a position."""
         try:

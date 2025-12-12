@@ -4,7 +4,8 @@ Manages a population of strategies (genomes) and evolves them over generations.
 """
 import random
 import json
-from typing import List, Dict, Any, Optional
+import multiprocessing
+from typing import List, Dict, Any, Optional, Callable
 from pathlib import Path
 from dataclasses import dataclass, asdict
 import numpy as np
@@ -68,6 +69,51 @@ class PopulationManager:
             
             self.population.append(Genome(strategy=strat, params=params, generation=0))
         self.save()
+
+    def evaluate_population(self, fitness_func: Callable[[Genome], float], n_jobs: int = -1):
+        """Evaluate entire population in parallel.
+        
+        Args:
+            fitness_func: Function taking a Genome and returning fitness float.
+                          Must be picklable (top-level function).
+            n_jobs: Number of parallel processes. -1 = all cores.
+        """
+        if not self.population:
+            return
+
+        if n_jobs == -1:
+            n_jobs = multiprocessing.cpu_count()
+            
+        # Limit jobs to population size
+        n_jobs = min(n_jobs, len(self.population))
+        
+        LOGGER.info(f"Evaluating {len(self.population)} genomes with {n_jobs} processes...")
+        
+        # Prepare arguments for map
+        # Note: fitness_func must be picklable. 
+        # If it's a method of an object, that object must be picklable.
+        
+        try:
+            with multiprocessing.Pool(processes=n_jobs) as pool:
+                fitness_scores = pool.map(fitness_func, self.population)
+                
+            # Update fitness
+            for genome, score in zip(self.population, fitness_scores):
+                genome.fitness = score
+                
+            self.save()
+            LOGGER.info("Evaluation complete.")
+            
+        except Exception as e:
+            LOGGER.error(f"Parallel evaluation failed: {e}")
+            LOGGER.warning("Falling back to sequential evaluation")
+            for genome in self.population:
+                try:
+                    genome.fitness = fitness_func(genome)
+                except Exception as ex:
+                    LOGGER.error(f"Genome eval failed: {ex}")
+                    genome.fitness = -1e6
+            self.save()
 
     def update_fitness(self, results: List[Dict[str, Any]]):
         """Update fitness of genomes based on backtest results."""

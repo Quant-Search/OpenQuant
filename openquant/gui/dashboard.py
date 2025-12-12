@@ -95,9 +95,10 @@ def view_dashboard(con):
     # Metrics
     st.subheader("Top Results")
     if not q.empty:
-        sort_cols = [c for c in ["wfo_mts", "dsr", "sharpe"] if c in q.columns]
+        sort_cols = [c for c in ["wfo_mts", "dsr", "sharpe", "sortino", "alpha_sharpe"] if c in q.columns]
         q = q.sort_values(sort_cols, ascending=[False] * len(sort_cols))
-        st.dataframe(q.head(50), width='stretch')
+        cols_to_show = [c for c in ["exchange","symbol","timeframe","strategy","sharpe","sortino","alpha_sharpe","bench_sharpe","win_rate","profit_factor","p_value","bull_sharpe","bear_sharpe","volatile_sharpe","calm_sharpe","mc_sharpe_p05","mc_sharpe_p95","mc_dd_p95","dsr","max_dd","cvar","n_trades","bars","wfo_mts","ok"] if c in q.columns]
+        st.dataframe(q.head(50)[cols_to_show], width='stretch')
         
         # Charts
         c1, c2 = st.columns(2)
@@ -106,8 +107,60 @@ def view_dashboard(con):
             st.plotly_chart(fig, width='stretch')
         with c2:
             if "max_dd" in q.columns:
-                fig2 = px.scatter(q, x="max_dd", y="sharpe", color="symbol", title="Risk vs Reward")
+                fig2 = px.scatter(q, x="max_dd", y="sortino" if "sortino" in q.columns else "sharpe", color="symbol", title="Risk vs Reward")
                 st.plotly_chart(fig2, width='stretch')
+
+        st.divider()
+        st.subheader("📐 Regime Comparison")
+        try:
+            regime_cols = [c for c in ["bull_sharpe","bear_sharpe","volatile_sharpe","calm_sharpe"] if c in q.columns]
+            if regime_cols:
+                avg_regime = q[regime_cols].mean().to_dict()
+                reg_df = pd.DataFrame({"Regime": list(avg_regime.keys()), "Sharpe": list(avg_regime.values())})
+                figr = px.bar(reg_df, x="Regime", y="Sharpe", title="Average Regime Sharpe")
+                st.plotly_chart(figr, use_container_width=True)
+                if "strategy" in q.columns:
+                    heat = q.groupby(["strategy"])[regime_cols].mean().reset_index()
+                    heat_melt = heat.melt(id_vars=["strategy"], var_name="Regime", value_name="Sharpe")
+                    fig_heat = px.density_heatmap(heat_melt, x="Regime", y="strategy", z="Sharpe", title="Strategy vs Regime Performance")
+                    st.plotly_chart(fig_heat, use_container_width=True)
+            else:
+                st.info("Regime metrics not available in this run.")
+        except Exception as e:
+            st.warning(f"Regime comparison error: {e}")
+        st.divider()
+        st.subheader("🧮 Allocation Preview")
+        try:
+            c1, c2, c3 = st.columns(3)
+            total_w = c1.number_input("Max Total Exposure", 0.1, 1.0, 1.0, 0.05)
+            per_sym = c2.number_input("Max Per Symbol", 0.05, 1.0, 0.20, 0.05)
+            slot_w = c3.number_input("Slot Weight", 0.01, 0.50, 0.05, 0.01)
+            reg_bias = st.selectbox("Regime Bias", ["(auto)", "bull", "bear", "volatile", "calm"], index=0)
+            from openquant.risk.exposure import propose_portfolio_weights
+            rows = []
+            for _, r in q.iterrows():
+                metrics = {k: r.get(k) for k in q.columns if k not in ["exchange","symbol","timeframe","strategy","params","bars","ok","run_id","ts"]}
+                rows.append({"exchange": r.get("exchange"), "symbol": r.get("symbol"), "timeframe": r.get("timeframe"), "strategy": r.get("strategy"), "metrics": metrics})
+            if rows:
+                if reg_bias == "(auto)":
+                    try:
+                        rr = {"bull_sharpe": float(q.get("bull_sharpe", pd.Series()).mean() or 0), "bear_sharpe": float(q.get("bear_sharpe", pd.Series()).mean() or 0)}
+                        reg_bias = "bull" if rr["bull_sharpe"] >= rr["bear_sharpe"] else "bear"
+                    except Exception:
+                        reg_bias = None
+                alloc = propose_portfolio_weights(rows, max_total_weight=float(total_w), max_symbol_weight=float(per_sym), slot_weight=float(slot_w), regime_bias=(None if reg_bias == "(auto)" else reg_bias))
+                if alloc:
+                    preview = []
+                    for idx, w in alloc:
+                        row = rows[idx]
+                        preview.append({"exchange": row["exchange"], "symbol": row["symbol"], "timeframe": row["timeframe"], "strategy": row["strategy"], "weight": float(w)})
+                    st.dataframe(pd.DataFrame(preview), use_container_width=True)
+                else:
+                    st.info("No allocation candidates.")
+            else:
+                st.info("No rows to allocate.")
+        except Exception as e:
+            st.warning(f"Allocation preview error: {e}")
     else:
         st.warning("No results match filters.")
 
@@ -238,6 +291,9 @@ def view_robot_control():
             cfg["alpaca_secret"] = c_s.text_input("Alpaca Secret Key", value=cfg.get("alpaca_secret", os.environ.get("APCA_API_SECRET_KEY", "")), type="password", disabled=SCHEDULER.is_running)
             cfg["alpaca_paper"] = st.checkbox("Paper Mode", value=cfg.get("alpaca_paper", True), disabled=SCHEDULER.is_running)
 
+        cfg["auto_apply_actions"] = st.checkbox("Auto-Apply Optimization Actions", value=cfg.get("auto_apply_actions", True), disabled=SCHEDULER.is_running)
+        cfg["apply_actions_to_live"] = st.checkbox("Apply Actions to Live Cycle Adjustments", value=cfg.get("apply_actions_to_live", True), disabled=SCHEDULER.is_running)
+
     # Actions
     col_start, col_stop, col_once = st.columns(3)
     
@@ -254,7 +310,9 @@ def view_robot_control():
             "use_alpaca": cfg.get("use_alpaca", False),
             "alpaca_key": cfg.get("alpaca_key"),
             "alpaca_secret": cfg.get("alpaca_secret"),
-            "alpaca_paper": cfg.get("alpaca_paper", True)
+            "alpaca_paper": cfg.get("alpaca_paper", True),
+            "auto_apply_actions": cfg.get("auto_apply_actions", True),
+            "apply_actions_to_live": cfg.get("apply_actions_to_live", True)
         }
         SCHEDULER.start(interval_minutes=cfg["interval"], config=run_cfg)
         st.rerun()
@@ -274,7 +332,9 @@ def view_robot_control():
                     "login": cfg["mt5_login"],
                     "password": cfg["mt5_pass"],
                     "server": cfg["mt5_server"]
-                }
+                },
+                "auto_apply_actions": cfg.get("auto_apply_actions", True),
+                "apply_actions_to_live": cfg.get("apply_actions_to_live", True)
             })
             try:
                 SCHEDULER._run_cycle()
@@ -285,12 +345,21 @@ def view_robot_control():
 
     # Logs (Tail)
     st.subheader("Live Logs")
-    # Simple log tailing from file
-    log_file = Path("openquant.log")
-    if log_file.exists():
-        with open(log_file, "r") as f:
+    # Tail newest log file from logs/
+    logs_dir = Path("logs")
+    latest_log = None
+    try:
+        if logs_dir.exists():
+            log_candidates = sorted(logs_dir.glob("openquant_*.log"), key=lambda p: p.stat().st_mtime, reverse=True)
+            if log_candidates:
+                latest_log = log_candidates[0]
+    except Exception:
+        latest_log = None
+    if latest_log and latest_log.exists():
+        with open(latest_log, "r", encoding="utf-8", errors="ignore") as f:
             lines = f.readlines()
             st.text_area("Log Output", "".join(lines[-20:]), height=300)
+            st.caption(f"Tailing: {latest_log.name}")
     else:
         st.caption("No log file found yet.")
         
@@ -394,6 +463,154 @@ def view_risk_monitor():
             st.info("No audit events yet.")
     except Exception as e:
         st.warning(f"Could not load audit trail: {e}")
+
+    st.divider()
+    
+    # Intelligent Alerts Panel
+    st.subheader("🔔 Intelligent Alerts")
+    try:
+        from openquant.reporting.intelligent_alerts import IntelligentAlerts
+        alerts_sys = IntelligentAlerts()
+        
+        # Load alerts from file
+        alerts_file = Path("data/alerts_history.json")
+        if alerts_file.exists():
+            with open(alerts_file, "r") as f:
+                all_alerts = json.load(f)
+        else:
+            all_alerts = []
+            
+        # Filter to last 24 hours
+        from datetime import datetime, timedelta
+        cutoff = datetime.now() - timedelta(hours=24)
+        recent_alerts = []
+        for a in all_alerts:
+            try:
+                alert_time = datetime.fromisoformat(a.get("timestamp", ""))
+                if alert_time > cutoff:
+                    recent_alerts.append(a)
+            except:
+                pass
+                
+        if recent_alerts:
+            # Count by severity
+            critical = len([a for a in recent_alerts if a.get("severity") == "critical"])
+            warnings = len([a for a in recent_alerts if a.get("severity") == "warning"])
+            info = len([a for a in recent_alerts if a.get("severity") == "info"])
+            
+            c1, c2, c3 = st.columns(3)
+            c1.metric("🔴 Critical", critical, delta_color="inverse" if critical > 0 else "normal")
+            c2.metric("🟡 Warning", warnings)
+            c3.metric("🔵 Info", info)
+            
+            # Show alerts as expandable list
+            for alert in reversed(recent_alerts[-10:]):  # Last 10
+                severity = alert.get("severity", "info")
+                sev_icon = {"critical": "🔴", "warning": "🟡", "info": "🔵"}.get(severity, "⚪")
+                
+                with st.expander(f"{sev_icon} {alert.get('message', 'No message')}"):
+                    st.caption(f"Time: {alert.get('timestamp', 'Unknown')[:19]}")
+                    st.caption(f"Type: {alert.get('type', 'Unknown')}")
+                    if alert.get('details'):
+                        st.json(alert['details'])
+        else:
+            st.success("No alerts in the last 24 hours!")
+            
+        # Manual alert checks
+        if st.button("🔍 Run Alert Checks Now"):
+            from openquant.reporting.performance_tracker import PERFORMANCE_TRACKER
+            
+            # Check drawdown
+            if PERFORMANCE_TRACKER.equity_curve:
+                eq_values = [pt.get("equity", 0) for pt in PERFORMANCE_TRACKER.equity_curve]
+                dd_alert = alerts_sys.check_drawdown(eq_values, threshold=0.25)
+                if dd_alert:
+                    alerts_sys.add_alert(dd_alert)
+                    st.warning(f"Alert generated: {dd_alert.message}")
+                    
+            # Check PnL anomaly
+            if PERFORMANCE_TRACKER.trades:
+                pnl_list = [t.pnl_usd for t in PERFORMANCE_TRACKER.trades]
+                pnl_alert = alerts_sys.check_pnl_anomaly(pnl_list)
+                if pnl_alert:
+                    alerts_sys.add_alert(pnl_alert)
+                    st.warning(f"Alert generated: {pnl_alert.message}")
+                    
+            # Save alerts
+            alerts_sys.save_alerts()
+            st.success("Alert checks completed!")
+            st.rerun()
+
+        st.subheader("⚙️ Diagnostics Thresholds")
+        try:
+            cfg_path = Path("data/diagnostics_config.json")
+            curr = {"wfo_drop": 0.2, "profit_factor_min": 1.2, "mc_dd_p95_max": 0.25, "p_value_max": 0.10}
+            if cfg_path.exists():
+                try:
+                    with open(cfg_path, "r") as f:
+                        curr.update(json.load(f))
+                except Exception:
+                    pass
+            c1, c2, c3, c4 = st.columns(4)
+            wfo_drop = c1.number_input("WFO Degradation Threshold", 0.0, 2.0, float(curr.get("wfo_drop", 0.2)), 0.05)
+            pf_min = c2.number_input("Min Profit Factor", 0.5, 5.0, float(curr.get("profit_factor_min", 1.2)), 0.1)
+            mc_dd = c3.number_input("MC Max DD (p95)", 0.0, 1.0, float(curr.get("mc_dd_p95_max", 0.25)), 0.01)
+            pval_max = c4.number_input("Max p-value", 0.0, 1.0, float(curr.get("p_value_max", 0.10)), 0.01)
+            if st.button("Save Thresholds"):
+                try:
+                    cfg_path.parent.mkdir(parents=True, exist_ok=True)
+                    with open(cfg_path, "w") as f:
+                        json.dump({
+                            "wfo_drop": float(wfo_drop),
+                            "profit_factor_min": float(pf_min),
+                            "mc_dd_p95_max": float(mc_dd),
+                            "p_value_max": float(pval_max)
+                        }, f, indent=2)
+                    st.success("Diagnostics thresholds saved")
+                except Exception as e:
+                    st.error(f"Failed to save thresholds: {e}")
+        except Exception as e:
+            st.warning(f"Thresholds UI error: {e}")
+
+        st.subheader("📑 Diagnostic Report")
+        try:
+            rep_file = Path("data/diagnostic_report.json")
+            if rep_file.exists():
+                with open(rep_file, "r") as f:
+                    rep = json.load(f)
+                c1, c2, c3 = st.columns(3)
+                agg = rep.get("aggregate", {})
+                c1.metric("Mean Sharpe", f"{agg.get('mean_sharpe', 0):.2f}")
+                c2.metric("Mean PF", f"{agg.get('mean_profit_factor', 0):.2f}")
+                c3.metric("Median p-value", f"{agg.get('median_p_value', 1):.2f}")
+                st.write("Top Results")
+                top = rep.get("top_results", [])
+                if top:
+                    st.dataframe(pd.DataFrame(top), use_container_width=True)
+                st.write("Recommendations")
+                recs = rep.get("recommendations", [])
+                if recs:
+                    st.json(recs)
+                st.write("ROI Projection")
+                st.json(rep.get("roi_projection", {}))
+            else:
+                st.info("No diagnostic report yet.")
+        except Exception as e:
+            st.warning(f"Failed to load diagnostic report: {e}")
+
+        st.subheader("🛠️ Optimization Actions")
+        if st.button("Generate Optimization Actions"):
+            try:
+                from openquant.reporting.intelligent_alerts import IntelligentAlerts
+                alerts = IntelligentAlerts()
+                actions = alerts.propose_optimization_actions("data/results.duckdb")
+                st.json(actions)
+                st.success("Optimization actions generated and saved.")
+            except Exception as e:
+                st.error(f"Failed to generate actions: {e}")
+            
+    except Exception as e:
+        st.error(f"Alerts error: {e}")
 
 
 def view_settings():
@@ -504,6 +721,214 @@ def view_charting(con):
             except Exception as e:
                 st.error(f"Error loading chart: {e}")
 
+def view_performance():
+    """Real-time profit and loss tracking."""
+    st.header("💰 Performance")
+    
+    try:
+        from openquant.reporting.performance_tracker import PERFORMANCE_TRACKER
+        stats = PERFORMANCE_TRACKER.get_stats(lookback_days=30)
+    except Exception as e:
+        st.error(f"Error loading performance tracker: {e}")
+        return
+        
+    # Top Row - Key Metrics
+    c1, c2, c3, c4 = st.columns(4)
+    
+    total_return = stats.get("total_return_pct", 0)
+    c1.metric(
+        "Total Return",
+        f"{total_return:+.1%}",
+        delta=f"${stats.get('total_pnl', 0):+,.0f}"
+    )
+    
+    daily_pnl = PERFORMANCE_TRACKER.get_daily_pnl()
+    c2.metric(
+        "Today's P&L",
+        f"${daily_pnl:+,.2f}",
+        delta="Today" if daily_pnl >= 0 else "Loss Today",
+        delta_color="normal" if daily_pnl >= 0 else "inverse"
+    )
+    
+    win_rate = stats.get("win_rate", 0)
+    c3.metric(
+        "Win Rate",
+        f"{win_rate:.1%}",
+        delta="Profitable" if win_rate > 0.5 else "Below 50%",
+        delta_color="normal" if win_rate > 0.5 else "inverse"
+    )
+    
+    current_dd = stats.get("current_drawdown", 0)
+    c4.metric(
+        "Current Drawdown",
+        f"{current_dd:.1%}",
+        delta="Safe" if current_dd < 0.25 else "Warning",
+        delta_color="normal" if current_dd < 0.25 else "inverse"
+    )
+    
+    st.divider()
+    
+    # Second Row - Detailed Stats
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Expectancy", f"${stats.get('expectancy', 0):+.2f}")
+    c2.metric("Profit Factor", f"{stats.get('profit_factor', 0):.2f}")
+    c3.metric("Sharpe (est)", f"{stats.get('sharpe_estimate', 0):.2f}")
+    c4.metric("Total Trades", stats.get("total_trades", 0))
+    
+    st.divider()
+    
+    # Equity Curve
+    st.subheader("📈 Equity Curve")
+    if PERFORMANCE_TRACKER.equity_curve:
+        eq_df = pd.DataFrame(PERFORMANCE_TRACKER.equity_curve)
+        if not eq_df.empty and 'timestamp' in eq_df.columns:
+            eq_df['timestamp'] = pd.to_datetime(eq_df['timestamp'])
+            
+            fig = px.line(
+                eq_df, x='timestamp', y='equity',
+                title="Account Equity Over Time"
+            )
+            fig.update_layout(showlegend=False)
+            st.plotly_chart(fig, use_container_width=True)
+            
+            # Drawdown chart
+            if 'drawdown' in eq_df.columns:
+                fig2 = px.area(
+                    eq_df, x='timestamp', y='drawdown',
+                    title="Drawdown",
+                    color_discrete_sequence=['red']
+                )
+                fig2.update_layout(showlegend=False)
+                st.plotly_chart(fig2, use_container_width=True)
+    else:
+        st.info("No equity data yet. Start trading to see the equity curve.")
+        
+    st.divider()
+    
+    # Wins vs Losses
+    st.subheader("📊 Win/Loss Analysis")
+    c1, c2 = st.columns(2)
+    
+    with c1:
+        wins = stats.get("wins", 0)
+        losses = stats.get("losses", 0)
+        if wins + losses > 0:
+            fig = px.pie(
+                values=[wins, losses],
+                names=['Wins', 'Losses'],
+                title="Trade Outcomes",
+                color_discrete_sequence=['green', 'red']
+            )
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("No trades recorded yet.")
+            
+    with c2:
+        avg_win = stats.get("avg_win", 0)
+        avg_loss = stats.get("avg_loss", 0)
+        if avg_win > 0 or avg_loss > 0:
+            fig = px.bar(
+                x=['Average Win', 'Average Loss'],
+                y=[avg_win, -avg_loss],
+                title="Average Trade Size",
+                color=['Win', 'Loss'],
+                color_discrete_map={'Win': 'green', 'Loss': 'red'}
+            )
+            fig.update_layout(showlegend=False)
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("No trade data available.")
+            
+    st.divider()
+    
+    # Recent Trades
+    st.subheader("📜 Recent Trades")
+    if PERFORMANCE_TRACKER.trades:
+        trades_df = pd.DataFrame([
+            {
+                "Time": t.timestamp[:19],
+                "Symbol": t.symbol,
+                "Side": t.side,
+                "P&L": f"${t.pnl_usd:+.2f}",
+                "P&L %": f"{t.pnl_pct:+.2%}",
+                "Strategy": t.strategy
+            }
+            for t in PERFORMANCE_TRACKER.trades[-20:][::-1]  # Last 20, newest first
+        ])
+        st.dataframe(trades_df, use_container_width=True)
+    else:
+        st.info("No trades recorded yet.")
+        
+    # Auto-refresh
+    if SCHEDULER.is_running:
+        time.sleep(5)
+        st.rerun()
+
+def view_ai_analytics():
+    st.header("🧠 AI & Optimization Analytics")
+    
+    tab1, tab2 = st.tabs(["🧬 Genetic Evolution", "🤖 Machine Learning"])
+    
+    with tab1:
+        st.subheader("Genetic Optimization Progress")
+        gen_file = Path("data/genetic_population.json")
+        if gen_file.exists():
+            try:
+                with open(gen_file, "r") as f:
+                    data = json.load(f)
+                    
+                gen = data.get("generation", 0)
+                pop = data.get("population", [])
+                
+                st.metric("Current Generation", gen)
+                st.metric("Population Size", len(pop))
+                
+                if pop:
+                    df_pop = pd.DataFrame(pop)
+                    
+                    # Fitness Distribution
+                    fig = px.histogram(df_pop, x="fitness", nbins=20, title="Population Fitness Distribution")
+                    st.plotly_chart(fig, width='stretch')
+                    
+                    # Top Genomes
+                    st.caption("Top Performing Genomes")
+                    st.dataframe(df_pop.sort_values("fitness", ascending=False).head(10), width='stretch')
+                    
+                    # Scatter Params (if available)
+                    if "params" in df_pop.columns:
+                        pass
+            except Exception as e:
+                st.error(f"Error loading genetic data: {e}")
+        else:
+            st.info("No genetic optimization data found. Run the genetic optimizer to see results here.")
+            
+    with tab2:
+        st.subheader("ML Strategy Insights")
+        ml_file = Path("data/ml_metrics.json")
+        if ml_file.exists():
+            try:
+                with open(ml_file, "r") as f:
+                    metrics = json.load(f)
+                    
+                st.caption(f"Last Updated: {metrics.get('timestamp')}")
+                st.metric("Model Type", metrics.get("model_type", "Unknown"))
+                
+                # Feature Importance
+                imp = metrics.get("feature_importance", {})
+                if imp:
+                    df_imp = pd.DataFrame(list(imp.items()), columns=["Feature", "Importance"])
+                    df_imp = df_imp.sort_values("Importance", ascending=True)
+                    
+                    fig = px.bar(df_imp, x="Importance", y="Feature", orientation='h', title="Feature Importance")
+                    st.plotly_chart(fig, width='stretch')
+                else:
+                    st.info("No feature importance data available.")
+                    
+            except Exception as e:
+                st.error(f"Error loading ML metrics: {e}")
+        else:
+            st.info("No ML metrics found. Run a backtest with MLStrategy to generate data.")
+
 # --- Main App ---
 
 def main():
@@ -535,7 +960,7 @@ def main():
         # Navigation
         page = st.radio(
             "Navigation",
-            ["Robot Control", "Risk Monitor", "Dashboard", "Charting", "Settings"],
+            ["Robot Control", "💰 Performance", "Risk Monitor", "Dashboard", "AI Analytics", "Charting", "Settings"],
             index=0  # Default to Robot Control
         )
 
@@ -547,10 +972,14 @@ def main():
 
     if page == "Robot Control":
         view_robot_control()
+    elif page == "💰 Performance":
+        view_performance()
     elif page == "Risk Monitor":
         view_risk_monitor()
     elif page == "Dashboard":
         view_dashboard(con)
+    elif page == "AI Analytics":
+        view_ai_analytics()
     elif page == "Charting":
         view_charting(con)
     elif page == "Settings":

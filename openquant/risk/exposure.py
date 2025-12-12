@@ -5,8 +5,10 @@ from __future__ import annotations
 
 All inputs are pure-Python data; no side effects. This module does not place orders.
 """
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional
 import math
+import numpy as _np
+
 
 
 def _score(row: Dict[str, Any]) -> Tuple[int, float, float, float]:
@@ -30,6 +32,7 @@ def propose_portfolio_weights(
     max_symbol_weight: float = 0.2,
     slot_weight: float = 0.05,
     volatility_adjusted: bool = True,  # New parameter
+    regime_bias: str | None = None,
 ) -> List[Tuple[int, float]]:
     """Propose portfolio weights (index, weight) for OK rows under exposure caps.
 
@@ -106,6 +109,24 @@ def propose_portfolio_weights(
     
     from .forex_correlation import check_portfolio_correlation
 
+    def _regime_factor(m: Dict[str, Any], regime: str | None) -> float:
+        if not regime:
+            return 1.0
+        try:
+            key = {
+                "bull": "bull_sharpe",
+                "bear": "bear_sharpe",
+                "volatile": "volatile_sharpe",
+                "calm": "calm_sharpe",
+            }.get(regime, None)
+            if not key:
+                return 1.0
+            s = float(m.get(key, 0.0) or 0.0)
+            f = 1.0 + (s / 5.0)
+            return max(0.7, min(1.5, f))
+        except Exception:
+            return 1.0
+
     for idx, row in candidates:
         if assigned_total >= max_total_weight - 1e-12:
             break
@@ -128,6 +149,7 @@ def propose_portfolio_weights(
         base_w = slot_weight
         if volatility_adjusted and sym in vol_factors:
             base_w *= vol_factors[sym]
+        base_w *= _regime_factor(row.get("metrics") or {}, regime_bias)
         
         w = min(base_w, remaining_total, remaining_sym)
         if w <= 1e-12:
@@ -137,4 +159,111 @@ def propose_portfolio_weights(
         per_symbol[sym] = sym_used + w
 
     return out
+
+
+def _project_to_simplex_with_caps(w: _np.ndarray, cap: float) -> _np.ndarray:
+    """Projette le vecteur w sur le simplexe {w>=0, sum(w)=1, w_i<=cap}."""
+    w = _np.clip(w, 0.0, cap)
+    s = w.sum()
+    if s == 0:
+        # répartir uniformément sous la contrainte cap
+        n = w.shape[0]
+        base = min(cap, 1.0 / n)
+        return _np.full(n, base)
+    return w / s
+
+
+def mean_variance_optimize(
+    exp_returns: _np.ndarray,
+    cov: _np.ndarray,
+    *,
+    risk_aversion: float = 1.0,
+    cap_per_asset: float = 0.2,
+    allow_short: bool = False,
+) -> _np.ndarray:
+    """
+    Optimisation de Markowitz (mean-variance) paramétrique.
+    Résout: argmin_w [ (risk_aversion) * w^T Σ w - exp_returns^T w ]
+    s.c. sum(w)=1, w>=0, w_i<=cap_per_asset (si allow_short=False).
+    Retourne les poids w.
+
+    Équations:
+    - Fonction objectif: f(w) = λ wᵀΣw - μᵀw
+    - Contrainte de budget: ∑ w_i = 1
+    - Contrainte de non-négativité: w_i ≥ 0 (désactivée si allow_short=True)
+    - Cap par actif: w_i ≤ c
+    """
+    n = exp_returns.shape[0]
+    Σ = _np.array(cov, dtype=float)
+    μ = _np.array(exp_returns, dtype=float)
+    # Solution fermée sans contraintes: w* ∝ Σ^{-1} μ
+    try:
+        Σ_inv = _np.linalg.pinv(Σ)
+    except Exception:
+        Σ_inv = _np.eye(n)
+    w = Σ_inv.dot(μ)
+    if w.sum() != 0:
+        w = w / w.sum()
+    else:
+        w = _np.full(n, 1.0 / n)
+    if not allow_short:
+        w = _project_to_simplex_with_caps(w, cap_per_asset)
+    return w
+
+
+def efficient_frontier(
+    exp_returns: _np.ndarray,
+    cov: _np.ndarray,
+    *,
+    n_points: int = 20,
+    cap_per_asset: float = 0.2,
+    allow_short: bool = False,
+) -> List[Dict[str, float]]:
+    """
+    Frontière efficiente (approximation) en balayant λ (aversion au risque).
+    Retourne une liste dicts {"lambda": λ, "return": μᵀw, "risk": sqrt(wᵀΣw)}.
+    """
+    out: List[Dict[str, float]] = []
+    lambdas = _np.linspace(0.1, 5.0, n_points)
+    for lam in lambdas:
+        w = mean_variance_optimize(exp_returns, cov, risk_aversion=lam, cap_per_asset=cap_per_asset, allow_short=allow_short)
+        ret = float(_np.dot(exp_returns, w))
+        risk = float(_np.sqrt(float(w.T.dot(cov).dot(w))))
+        out.append({"lambda": float(lam), "return": ret, "risk": risk})
+    return out
+
+
+def parametric_var_cvar(portfolio_mean: float, portfolio_std: float, alpha: float = 0.95) -> Tuple[float, float]:
+    """
+    VaR/CVaR paramétriques sous hypothèse normale.
+    VaR_α = μ + σ Φ^{-1}(α)
+    CVaR_α = μ + σ * (ϕ(z) / (1-α)), où z = Φ^{-1}(α)
+    """
+    from math import sqrt, exp, pi
+    # Inversion de la CDF normale standard (approximation)
+    # Utilise l’approximation de Wichura via scipy absente -> approximation simple
+    import statistics
+    # Approche: pour α dans (0.5, 0.999), z ≈ statistics.NormalDist().inv_cdf(alpha)
+    z = statistics.NormalDist().inv_cdf(alpha)
+    phi = (1.0 / sqrt(2.0 * pi)) * exp(-(z**2) / 2.0)
+    var = portfolio_mean + portfolio_std * z
+    cvar = portfolio_mean + portfolio_std * (phi / (1.0 - alpha))
+    return var, cvar
+
+
+def build_input_from_rows(rows: List[Dict[str, Any]]) -> Tuple[_np.ndarray, _np.ndarray]:
+    """
+    Construit (μ, Σ) à partir des métriques de recherche.
+    Fallback: μ à partir de sharpe estimé et Σ diagonale calibrée sur max_dd.
+    """
+    sharpe_list = []
+    risk_diag = []
+    for r in rows:
+        m = r.get("metrics", {})
+        sharpe_list.append(float(m.get("sharpe", 0.0) or 0.0))
+        dd = float(m.get("max_dd", 0.0) or 0.0)
+        risk_diag.append(max(dd, 1e-3))
+    μ = _np.array(sharpe_list, dtype=float)
+    Σ = _np.diag(_np.array(risk_diag, dtype=float))
+    return μ, Σ
 

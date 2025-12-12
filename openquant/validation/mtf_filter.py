@@ -1,11 +1,11 @@
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Callable
 import pandas as pd
 
 def check_mtf_confirmation(
     symbol: str,
     timeframe: str,
     signal_direction: int,  # 1 = long, -1 = short, 0 = flat
-    fetch_func callable,  # Function to fetch OHLCV for (symbol, tf)
+    fetch_func: Callable[[str, str], pd.DataFrame],  # Function to fetch OHLCV for (symbol, tf)
 ) -> bool:
     """Check if higher timeframes confirm the signal.
     

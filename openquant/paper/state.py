@@ -55,10 +55,14 @@ class PortfolioState:
 
     def set_position(self, key: Key, units: float) -> None:
         """Set units for key (replace)."""
-        self.holdings[key] = float(units)
-        # If position is closed (approx 0), clear aux data
-        if abs(units) < 1e-9:
+        u = float(units)
+        # Clamp très petites valeurs à 0 pour éviter les -0.000
+        if abs(u) < 1e-8:
+            if key in self.holdings:
+                self.holdings.pop(key, None)
             self.avg_price.pop(key, None)
             self.sl_levels.pop(key, None)
             self.tp_levels.pop(key, None)
+            return
+        self.holdings[key] = u
 

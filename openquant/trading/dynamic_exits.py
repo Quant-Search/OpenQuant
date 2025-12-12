@@ -23,6 +23,7 @@ class ExitMethod(Enum):
     SUPPORT_RESISTANCE = "support_resistance"
     VOLATILITY = "volatility"
     TIME_BASED = "time_based"
+    CHANDELIER = "chandelier"
 
 
 class DynamicExitCalculator:
@@ -87,6 +88,8 @@ class DynamicExitCalculator:
             return self._volatility_based(df, entry_price, side)
         elif self.method == ExitMethod.TIME_BASED:
             return self._time_based(df, entry_price, side, position_age_hours)
+        elif self.method == ExitMethod.CHANDELIER:
+            return self._chandelier_exit(df, entry_price, side)
         else:
             return self._fallback_exits(entry_price, side)
             
@@ -271,3 +274,39 @@ class DynamicExitCalculator:
             sl = entry_price * (1.0 + sl_pct)
             
         return (float(tp), float(sl))
+
+    def _chandelier_exit(
+        self,
+        df: pd.DataFrame,
+        entry_price: float,
+        side: str
+    ) -> Tuple[float, float]:
+        """Chandelier Exit (High/Low based SL)."""
+        try:
+            atr = self._calculate_atr(df)
+            recent = df.tail(22) # Standard period for Chandelier
+            
+            if side == "LONG":
+                # SL = Highest High - ATR * Mult
+                highest_high = float(recent['High'].max())
+                sl = highest_high - (atr * self.sl_atr_mult)
+                # Ensure SL is below entry (otherwise immediate stop)
+                sl = min(sl, entry_price * 0.999)
+                
+                # TP = Entry + ATR * TP Mult (Standard ATR target)
+                tp = entry_price + (atr * self.tp_atr_mult)
+                
+            else:
+                # SL = Lowest Low + ATR * Mult
+                lowest_low = float(recent['Low'].min())
+                sl = lowest_low + (atr * self.sl_atr_mult)
+                # Ensure SL is above entry
+                sl = max(sl, entry_price * 1.001)
+                
+                tp = entry_price - (atr * self.tp_atr_mult)
+                
+            return (float(tp), float(sl))
+            
+        except Exception as e:
+            LOGGER.error(f"Error in chandelier calc: {e}")
+            return self._fallback_exits(entry_price, side)

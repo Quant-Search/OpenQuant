@@ -44,6 +44,19 @@ def _ensure_schema(con: duckdb.DuckDBPyConnection) -> None:  # type: ignore
             strategy VARCHAR,
             params JSON,
             sharpe DOUBLE,
+            sortino DOUBLE,
+            bench_sharpe DOUBLE,
+            alpha_sharpe DOUBLE,
+            win_rate DOUBLE,
+            mc_sharpe_p05 DOUBLE,
+            mc_sharpe_p95 DOUBLE,
+            mc_dd_p95 DOUBLE,
+            profit_factor DOUBLE,
+            bull_sharpe DOUBLE,
+            bear_sharpe DOUBLE,
+            volatile_sharpe DOUBLE,
+            calm_sharpe DOUBLE,
+            p_value DOUBLE,
             dsr DOUBLE,
             max_dd DOUBLE,
             cvar DOUBLE,
@@ -60,6 +73,32 @@ def _ensure_schema(con: duckdb.DuckDBPyConnection) -> None:  # type: ignore
         names = {row[1] for row in cols}
         if 'wfo_mts' not in names:
             con.execute("ALTER TABLE results ADD COLUMN wfo_mts DOUBLE")
+        if 'sortino' not in names:
+            con.execute("ALTER TABLE results ADD COLUMN sortino DOUBLE")
+        if 'bench_sharpe' not in names:
+            con.execute("ALTER TABLE results ADD COLUMN bench_sharpe DOUBLE")
+        if 'alpha_sharpe' not in names:
+            con.execute("ALTER TABLE results ADD COLUMN alpha_sharpe DOUBLE")
+        if 'win_rate' not in names:
+            con.execute("ALTER TABLE results ADD COLUMN win_rate DOUBLE")
+        if 'mc_sharpe_p05' not in names:
+            con.execute("ALTER TABLE results ADD COLUMN mc_sharpe_p05 DOUBLE")
+        if 'mc_sharpe_p95' not in names:
+            con.execute("ALTER TABLE results ADD COLUMN mc_sharpe_p95 DOUBLE")
+        if 'mc_dd_p95' not in names:
+            con.execute("ALTER TABLE results ADD COLUMN mc_dd_p95 DOUBLE")
+        if 'profit_factor' not in names:
+            con.execute("ALTER TABLE results ADD COLUMN profit_factor DOUBLE")
+        if 'bull_sharpe' not in names:
+            con.execute("ALTER TABLE results ADD COLUMN bull_sharpe DOUBLE")
+        if 'bear_sharpe' not in names:
+            con.execute("ALTER TABLE results ADD COLUMN bear_sharpe DOUBLE")
+        if 'volatile_sharpe' not in names:
+            con.execute("ALTER TABLE results ADD COLUMN volatile_sharpe DOUBLE")
+        if 'calm_sharpe' not in names:
+            con.execute("ALTER TABLE results ADD COLUMN calm_sharpe DOUBLE")
+        if 'p_value' not in names:
+            con.execute("ALTER TABLE results ADD COLUMN p_value DOUBLE")
     except Exception:
         pass
 
@@ -286,6 +325,19 @@ def upsert_results(rows: List[Dict[str, Any]], db_path: str | Path = "data/resul
                 r.get("strategy", ""),
                 json.dumps(r.get("params", {})),
                 float(m.get("sharpe", 0.0)),
+                float(m.get("sortino", 0.0)),
+                float(m.get("bench_sharpe", 0.0)),
+                float(m.get("alpha_sharpe", 0.0)),
+                float(m.get("win_rate", 0.0)),
+                float(m.get("mc_sharpe_p05", 0.0)),
+                float(m.get("mc_sharpe_p95", 0.0)),
+                float(m.get("mc_dd_p95", 0.0)),
+                float(m.get("profit_factor", 0.0)),
+                float(m.get("bull_sharpe", 0.0)),
+                float(m.get("bear_sharpe", 0.0)),
+                float(m.get("volatile_sharpe", 0.0)),
+                float(m.get("calm_sharpe", 0.0)),
+                float(m.get("p_value", 1.0)),
                 float(m.get("dsr", 0.0)),
                 float(m.get("max_dd", 0.0)),
                 float(m.get("cvar", 0.0)),
@@ -308,9 +360,20 @@ def upsert_results(rows: List[Dict[str, Any]], db_path: str | Path = "data/resul
         _ensure_schema(con)
         con.executemany(
             """
-            INSERT INTO results (ts, run_id, exchange, symbol, timeframe, strategy, params,
-                                 sharpe, dsr, max_dd, cvar, n_trades, bars, ok, wfo_mts)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO results (
+                ts, run_id, exchange, symbol, timeframe, strategy, params,
+                sharpe, sortino, bench_sharpe, alpha_sharpe, win_rate,
+                mc_sharpe_p05, mc_sharpe_p95, mc_dd_p95,
+                profit_factor, bull_sharpe, bear_sharpe, volatile_sharpe, calm_sharpe,
+                p_value, dsr, max_dd, cvar, n_trades, bars, ok, wfo_mts
+            )
+            VALUES (
+                ?, ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?,
+                ?, ?, ?,
+                ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?, ?, ?, ?
+            )
             """,
             prepared,
         )
