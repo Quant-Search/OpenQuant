@@ -9,8 +9,12 @@ from enum import Enum
 import numpy as np
 import pandas as pd
 
-from ..quant.regime_detector import RegimeDetector
+from ..quant.regime_detector import RegimeDetector, RegimeType
 from ..utils.logging import get_logger
+from ..utils.validation import (
+    validate_params,
+    validate_probability_param
+)
 from .base import BaseStrategy
 from .ml_strategy import MLStrategy
 
@@ -42,7 +46,11 @@ class EnsembleStrategy(BaseStrategy):
     - Regime-aware: activates different sub-strategies per regime
     - Tracks individual strategy performance for adaptive weighting
     """
-
+    
+    @validate_params(
+        min_agreement=validate_probability_param('min_agreement'),
+        probability_threshold=validate_probability_param('probability_threshold')
+    )
     def __init__(
         self,
         combine_method: CombineMethod = CombineMethod.VOTING,

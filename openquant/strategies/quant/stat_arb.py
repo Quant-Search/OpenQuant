@@ -8,6 +8,12 @@ import pandas as pd
 
 from openquant.quant.filtering import KalmanRegression
 from openquant.strategies.base import BaseStrategy
+from openquant.utils.validation import (
+    validate_params,
+    validate_positive_param,
+    validate_positive_int_param,
+    validate_range_param
+)
 
 
 class StatArbStrategy(BaseStrategy):
@@ -22,6 +28,11 @@ class StatArbStrategy(BaseStrategy):
     5. Short Spread (Short Y, Long X) if Z > Threshold.
     6. Exit when Z reverts to 0 (or Stop Loss).
     """
+    @validate_params(
+        entry_z=validate_positive_param('entry_z'),
+        exit_z=validate_range_param('exit_z', min_val=0.0),
+        lookback=validate_positive_int_param('lookback')
+    )
     def __init__(self, pair_symbol: str | None = None, entry_z: float = 2.0, exit_z: float = 0.0, lookback: int = 100) -> None:
         """
         pair_symbol: The 'X' symbol (independent variable). The main symbol of the strategy is 'Y'.

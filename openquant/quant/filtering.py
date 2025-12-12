@@ -7,6 +7,7 @@ of the relationship between two assets: Y = alpha + beta * X + noise.
 import numpy as np
 import pandas as pd
 from filterpy.kalman import KalmanFilter
+from openquant.utils.validation import validate_params, validate_positive_param
 
 
 class KalmanRegression:
@@ -14,6 +15,10 @@ class KalmanRegression:
     Online Kalman Filter for linear regression: y = alpha + beta * x
     State vector x = [alpha, beta]
     """
+    @validate_params(
+        delta=validate_positive_param('delta'),
+        r=validate_positive_param('r')
+    )
     def __init__(self, delta: float = 1e-5, r: float = 1e-3) -> None:
         """
         delta: Process noise covariance (allows parameters to drift).

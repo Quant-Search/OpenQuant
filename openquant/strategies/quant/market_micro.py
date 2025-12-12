@@ -7,7 +7,11 @@ import pandas as pd
 
 from openquant.quant.microstructure import vpin
 from openquant.strategies.base import BaseStrategy
-
+from openquant.utils.validation import (
+    validate_params,
+    validate_positive_int_param,
+    validate_range_param
+)
 
 class LiquidityProvisionStrategy(BaseStrategy):
     """
@@ -26,7 +30,12 @@ class LiquidityProvisionStrategy(BaseStrategy):
       - Let's use a dynamic threshold or fixed 0.3.
     - lookback: Window for local trend/mean-reversion calculation.
     """
-
+    
+    @validate_params(
+        vpin_window=validate_positive_int_param('vpin_window'),
+        vpin_threshold=validate_range_param('vpin_threshold', min_val=0.0, max_val=1.0),
+        lookback=validate_positive_int_param('lookback')
+    )
     def __init__(self, vpin_window: int = 50, vpin_threshold: float = 0.25, lookback: int = 20) -> None:
         self.vpin_window: int = vpin_window
         self.vpin_threshold: float = vpin_threshold

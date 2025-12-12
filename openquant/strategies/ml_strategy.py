@@ -17,6 +17,11 @@ from sklearn.preprocessing import StandardScaler
 
 from openquant.strategies.base import BaseStrategy
 from openquant.utils.logging import get_logger
+from openquant.utils.validation import (
+    validate_params,
+    validate_positive_int_param,
+    validate_probability_param
+)
 
 LOGGER = get_logger(__name__)
 
@@ -31,9 +36,14 @@ class MLStrategy(BaseStrategy):
         features: List of feature names to generate.
         probability_threshold: Minimum probability confidence to generate a signal.
     """
-    def __init__(self,
-                 model: BaseEstimator | None = None,
-                 lookback: int = 500,
+    @validate_params(
+        lookback=validate_positive_int_param('lookback'),
+        retrain_interval=validate_positive_int_param('retrain_interval'),
+        probability_threshold=validate_probability_param('probability_threshold')
+    )
+    def __init__(self, 
+                 model: BaseEstimator | None = None, 
+                 lookback: int = 500, 
                  retrain_interval: int = 50,
                  probability_threshold: float = 0.55,
                  feature_config: dict[str, Any] | None = None) -> None:

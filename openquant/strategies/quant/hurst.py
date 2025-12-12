@@ -2,6 +2,11 @@ import numpy as np
 import pandas as pd
 
 from ..base import BaseStrategy
+from openquant.utils.validation import (
+    validate_params,
+    validate_positive_int_param,
+    validate_range_param
+)
 
 
 class HurstExponentStrategy(BaseStrategy):
@@ -15,7 +20,12 @@ class HurstExponentStrategy(BaseStrategy):
     - If H > 0.5 (Trend): Use SMA Crossover logic.
     - If H < 0.5 (Mean Revert): Use RSI logic.
     """
-
+    
+    @validate_params(
+        lookback=validate_positive_int_param('lookback'),
+        trend_threshold=validate_range_param('trend_threshold', min_val=0.0, max_val=1.0),
+        mr_threshold=validate_range_param('mr_threshold', min_val=0.0, max_val=1.0)
+    )
     def __init__(self, lookback: int = 100, trend_threshold: float = 0.55, mr_threshold: float = 0.45) -> None:
         self.lookback: int = int(lookback)
         self.trend_threshold: float = float(trend_threshold)

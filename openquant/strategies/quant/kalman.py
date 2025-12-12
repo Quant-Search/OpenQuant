@@ -3,6 +3,10 @@ import numpy as np
 import pandas as pd
 
 from ..base import BaseStrategy
+from openquant.utils.validation import (
+    validate_params,
+    validate_positive_param
+)
 
 
 class KalmanMeanReversionStrategy(BaseStrategy):
@@ -16,7 +20,12 @@ class KalmanMeanReversionStrategy(BaseStrategy):
     Long: Price < Estimated Price - Threshold
     Short: Price > Estimated Price + Threshold
     """
-
+    
+    @validate_params(
+        process_noise=validate_positive_param('process_noise'),
+        measurement_noise=validate_positive_param('measurement_noise'),
+        threshold=validate_positive_param('threshold')
+    )
     def __init__(self, process_noise: float = 1e-5, measurement_noise: float = 1e-3, threshold: float = 1.0, use_gpu: bool = True) -> None:
         self.process_noise: float = float(process_noise)
         self.measurement_noise: float = float(measurement_noise)

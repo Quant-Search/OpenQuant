@@ -21,6 +21,10 @@ from typing import Optional, Dict, Any
 from dataclasses import dataclass, field, asdict
 
 from openquant.utils.logging import get_logger
+from openquant.utils.validation import (
+    validate_params,
+    validate_range_param
+)
 
 LOGGER = get_logger(__name__)
 
@@ -65,6 +69,11 @@ class CircuitBreaker:
         breaker.update(current_equity=100000.0)
     """
 
+    @validate_params(
+        daily_loss_limit=validate_range_param('daily_loss_limit', min_val=0.0, max_val=1.0),
+        drawdown_limit=validate_range_param('drawdown_limit', min_val=0.0, max_val=1.0),
+        volatility_limit=validate_range_param('volatility_limit', min_val=0.0)
+    )
     def __init__(
         self,
         daily_loss_limit: float = 0.02,  # 2% default

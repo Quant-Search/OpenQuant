@@ -22,6 +22,11 @@ Example:
 from typing import Optional, Dict, List, Tuple
 from dataclasses import dataclass
 import time
+from openquant.utils.validation import (
+    validate_params,
+    validate_positive_param,
+    validate_range_param
+)
 
 
 @dataclass
@@ -43,6 +48,12 @@ class TrailingStopManager:
     to lock in profits as the price moves favorably.
     """
     
+    @validate_params(
+        trailing_bps=validate_positive_param('trailing_bps'),
+        activation_bps=validate_range_param('activation_bps', min_val=0.0),
+        min_update_bps=validate_range_param('min_update_bps', min_val=0.0),
+        acceleration_factor=validate_range_param('acceleration_factor', min_val=0.0)
+    )
     def __init__(
         self,
         trailing_bps: float = 50.0,
@@ -61,6 +72,10 @@ class TrailingStopManager:
             acceleration_factor: If > 0, reduces trailing distance as profit increases.
                                  New Distance = Base Distance * (1 - acceleration * profit_ratio)
         """
+        if atr_multiplier is not None and atr_multiplier <= 0:
+            from openquant.utils.validation import ValidationError
+            raise ValidationError("atr_multiplier must be positive if provided")
+        
         self.trailing_bps = trailing_bps
         self.activation_bps = activation_bps
         self.min_update_bps = min_update_bps

@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 
 from ..utils.logging import get_logger
+from ..utils.validation import validate_params, validate_positive_int_param
 
 LOGGER = get_logger(__name__)
 
@@ -25,9 +26,12 @@ class RegimeDetector:
     """
     Detect market regimes using Hurst Exponent and volatility analysis.
     """
+    @validate_params(
+        lookback=validate_positive_int_param('lookback')
+    )
     def __init__(self, lookback: int = 100) -> None:
         self.lookback: int = lookback
-
+        
     def detect_regime(self, df: pd.DataFrame) -> dict[str, Any]:
         """
         Detect the current market regime.

@@ -15,6 +15,7 @@ import pandas as pd
 
 from openquant.backtest.metrics import sharpe
 from openquant.evaluation.regime import compute_regime_features
+from openquant.utils.validation import normalize_weights, ValidationError
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +53,9 @@ class StrategyMixer:
             min_weight: Minimum weight for any strategy.
             max_weight: Maximum weight for any strategy.
         """
+        if not strategies:
+            raise ValidationError("strategies list cannot be empty")
+        
         self.strategies: list[Any] = strategies
         self.enable_dynamic_weights = enable_dynamic_weights
         self.enable_correlation_filter = enable_correlation_filter
@@ -65,11 +69,11 @@ class StrategyMixer:
         if weights is None:
             self.weights: list[float] = [1.0 / len(strategies)] * len(strategies)
         else:
-            s = sum(weights)
-            if s == 0:
-                self.weights = [1.0 / len(strategies)] * len(strategies)
-            else:
-                self.weights = [w / s for w in weights]
+            if len(weights) != len(strategies):
+                raise ValidationError(
+                    f"Number of weights ({len(weights)}) must match number of strategies ({len(strategies)})"
+                )
+            self.weights = normalize_weights(weights, "strategy weights")
         
         self.returns_history: list[deque] = [deque(maxlen=rolling_window) for _ in strategies]
         self.sharpe_history: list[float] = [0.0] * len(strategies)
