@@ -299,3 +299,6 @@ reports/*.jpg
 # Temporary requirements files
 requirements_temp.txt
 temp_requirements.txt
+
+# OpenQuant monitoring and state files
+data/anomaly_detector_state.json
