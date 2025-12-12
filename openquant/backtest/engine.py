@@ -387,19 +387,20 @@ else:
 def backtest_signals(
     df: pd.DataFrame,
     signals: pd.Series,
-    fee_bps: float = 1.0,
-    slippage_bps: float = 0.0,
-    weight: float = 1.0,
+    fee_bps: float = None,
+    slippage_bps: float = None,
+    weight: float = None,
     stop_loss_atr: float = None,
     take_profit_atr: float = None,
-    spread_bps: float = 0.0,
-    leverage: float = 1.0,  # Forex leverage (1x = crypto, 50x = typical Forex)
+    spread_bps: float = None,
+    leverage: float = None,
     swap_long: float = 0.0,
     swap_short: float = 0.0,
     funding_bps_long: float = 0.0,
     funding_bps_short: float = 0.0,
     pip_value: float = 0.0001,
-    impact_coeff: float = 0.0,
+    impact_coeff: float = None,
+    config = None,
 ) -> BacktestResult:
     """Backtest long/flat signals on Close prices with fees in basis points per trade.
     
@@ -418,9 +419,22 @@ def backtest_signals(
         swap_long: Swap cost for long positions in pips per day (negative = cost).
         swap_short: Swap cost for short positions in pips per day.
         pip_value: Value of 1 pip in quote currency (e.g., 0.0001 for EURUSD).
+        config: ConfigManager instance (optional, loads from global if None)
     Returns:
         BacktestResult with returns and equity curve (starting at 1.0).
     """
+    if config is None:
+        from openquant.config.manager import get_config
+        config = get_config()
+    
+    bt_config = config.get_section("backtest")
+    fee_bps = fee_bps if fee_bps is not None else bt_config.fee_bps
+    slippage_bps = slippage_bps if slippage_bps is not None else bt_config.slippage_bps
+    weight = weight if weight is not None else bt_config.weight
+    spread_bps = spread_bps if spread_bps is not None else bt_config.spread_bps
+    leverage = leverage if leverage is not None else bt_config.leverage
+    impact_coeff = impact_coeff if impact_coeff is not None else bt_config.impact_coeff
+    
     if "Close" not in df.columns:
         raise KeyError("DataFrame must contain 'Close' column")
     w = max(0.0, float(weight))

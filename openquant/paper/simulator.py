@@ -428,11 +428,16 @@ def check_exits(state: PortfolioState, snap: MarketSnapshot) -> List[Tuple[Key, 
     return exit_orders
 
 
-def check_daily_loss(state: PortfolioState, snap: MarketSnapshot, limit_pct: float) -> bool:
+def check_daily_loss(state: PortfolioState, snap: MarketSnapshot, limit_pct: float = None) -> bool:
     """Check if daily loss exceeds limit.
     
     Returns True if trading should stop (limit hit).
     """
+    if limit_pct is None:
+        from openquant.config.manager import get_config
+        config = get_config()
+        limit_pct = config.get("paper_trading.daily_loss_limit", 0.05)
+    
     if limit_pct <= 0:
         return False
         

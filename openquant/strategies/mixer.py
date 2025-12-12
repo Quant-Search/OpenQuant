@@ -140,7 +140,14 @@ class StrategyMixer:
         for i, sig in enumerate(strategy_signals):
             combined_signal += sig * self.weights[i]
         
-        threshold: float = 0.2
+        # Thresholding
+        # If weighted sum > threshold -> Long (1)
+        # If weighted sum < -threshold -> Short (-1)
+        # Else -> Flat (0)
+        from openquant.config.manager import get_config
+        config = get_config()
+        threshold = config.get("strategy_mixer.threshold", 0.2) 
+        
         final_signal = pd.Series(0, index=df.index)
         final_signal[combined_signal > threshold] = 1
         final_signal[combined_signal < -threshold] = -1

@@ -1,0 +1,124 @@
+# OpenQuant Default Configuration
+# This file contains default values for all configuration parameters
+
+forex:
+  symbols:
+    EURUSD:
+      spread_bps: 0.5
+      swap_long: -0.5
+      swap_short: 0.2
+      optimal_sessions:
+        - london
+        - newyork
+      pip_value: 0.0001
+    GBPUSD:
+      spread_bps: 0.8
+      swap_long: -0.7
+      swap_short: 0.3
+      optimal_sessions:
+        - london
+        - newyork
+      pip_value: 0.0001
+    USDJPY:
+      spread_bps: 0.6
+      swap_long: 0.3
+      swap_short: -0.8
+      optimal_sessions:
+        - asian
+        - london
+      pip_value: 0.01
+    AUDUSD:
+      spread_bps: 1.0
+      swap_long: -0.3
+      swap_short: 0.1
+      optimal_sessions:
+        - asian
+        - newyork
+      pip_value: 0.0001
+    USDCAD:
+      spread_bps: 1.2
+      swap_long: -0.4
+      swap_short: 0.2
+      optimal_sessions:
+        - newyork
+      pip_value: 0.0001
+    USDCHF:
+      spread_bps: 1.5
+      swap_long: 0.5
+      swap_short: -1.0
+      optimal_sessions:
+        - london
+      pip_value: 0.0001
+    NZDUSD:
+      spread_bps: 1.5
+      swap_long: -0.2
+      swap_short: 0.0
+      optimal_sessions:
+        - asian
+      pip_value: 0.0001
+    EURGBP:
+      spread_bps: 1.0
+      swap_long: -0.6
+      swap_short: 0.2
+      optimal_sessions:
+        - london
+      pip_value: 0.0001
+  sessions:
+    asian:
+      start: 0
+      end: 9
+    london:
+      start: 8
+      end: 17
+    newyork:
+      start: 13
+      end: 22
+
+risk_limits:
+  dd_limit: 0.20
+  daily_loss_cap: 0.05
+  cvar_limit: 0.08
+  max_exposure_per_symbol: 0.20
+
+circuit_breaker:
+  daily_loss_limit: 0.02
+  drawdown_limit: 0.10
+  volatility_limit: 0.05
+
+backtest:
+  fee_bps: 1.0
+  slippage_bps: 0.0
+  spread_bps: 0.0
+  leverage: 1.0
+  weight: 1.0
+  impact_coeff: 0.0
+
+strategy_mixer:
+  threshold: 0.2
+  equal_weights: true
+
+adaptive_sizing:
+  method: volatility
+  target_risk: 0.01
+  max_drawdown: 0.50
+  aggressive_mode: false
+  target_volatility: 0.20
+  max_leverage: 1.0
+
+stationarity:
+  adf_threshold: 0.05
+  kpss_threshold: 0.05
+  hurst_mean_reverting: 0.45
+  hurst_trending: 0.55
+  hurst_high_confidence: 0.15
+
+concentration_limits:
+  max_per_symbol: null
+  max_per_strategy_per_symbol: null
+
+paper_trading:
+  fee_bps: 0.0
+  slippage_bps: 0.0
+  next_bar_fill: false
+  max_fill_fraction: 1.0
+  daily_loss_limit: 0.05

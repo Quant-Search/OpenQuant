@@ -18,16 +18,22 @@ LOGGER = get_logger(__name__)
 class PortfolioGuard:
     """Monitors portfolio risk metrics and enforces limits."""
     
-    def __init__(self, state_file: Path = Path("data/risk_state.json")):
+    def __init__(self, state_file: Path = Path("data/risk_state.json"), config=None):
         self.state_file = state_file
         self.high_water_mark = 0.0
         self.start_day_equity = 0.0
         self.current_date = date.today()
+        
+        if config is None:
+            from openquant.config.manager import get_config
+            config = get_config()
+        
+        risk_limits = config.get_section("risk_limits")
         self.limits = {
-            "dd_limit": 0.20,          # 20% Max Drawdown
-            "daily_loss_cap": 0.05,    # 5% Daily Loss
-            "cvar_limit": 0.08,        # 8% CVaR (95% confidence)
-            "max_exposure_per_symbol": 0.20 # 20% per symbol
+            "dd_limit": risk_limits.dd_limit,
+            "daily_loss_cap": risk_limits.daily_loss_cap,
+            "cvar_limit": risk_limits.cvar_limit,
+            "max_exposure_per_symbol": risk_limits.max_exposure_per_symbol
         }
         self.returns_history: List[float] = []
         self._load_state()

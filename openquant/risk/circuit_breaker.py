@@ -76,10 +76,11 @@ class CircuitBreaker:
     )
     def __init__(
         self,
-        daily_loss_limit: float = 0.02,  # 2% default
-        drawdown_limit: float = 0.10,  # 10% default
-        volatility_limit: float = 0.05,  # 5% default
+        daily_loss_limit: float = None,
+        drawdown_limit: float = None,
+        volatility_limit: float = None,
         state_file: str = "data/circuit_breaker_state.json",
+        config=None,
     ):
         """Initialize circuit breaker with thresholds.
 
@@ -88,10 +89,16 @@ class CircuitBreaker:
             drawdown_limit: Maximum allowed drawdown from peak as fraction
             volatility_limit: Maximum allowed volatility before halt
             state_file: Path to persist state across restarts
+            config: ConfigManager instance (optional, loads from global if None)
         """
-        self.daily_loss_limit = daily_loss_limit
-        self.drawdown_limit = drawdown_limit
-        self.volatility_limit = volatility_limit
+        if config is None:
+            from openquant.config.manager import get_config
+            config = get_config()
+        
+        cb_config = config.get_section("circuit_breaker")
+        self.daily_loss_limit = daily_loss_limit if daily_loss_limit is not None else cb_config.daily_loss_limit
+        self.drawdown_limit = drawdown_limit if drawdown_limit is not None else cb_config.drawdown_limit
+        self.volatility_limit = volatility_limit if volatility_limit is not None else cb_config.volatility_limit
         self.state_file = Path(state_file)
 
         # Load or initialize state

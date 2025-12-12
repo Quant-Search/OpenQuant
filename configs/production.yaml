@@ -1,0 +1,80 @@
+# OpenQuant Production Configuration
+# Conservative settings for live trading
+
+forex:
+  symbols:
+    EURUSD:
+      spread_bps: 0.5
+      swap_long: -0.5
+      swap_short: 0.2
+      optimal_sessions:
+        - london
+        - newyork
+      pip_value: 0.0001
+    GBPUSD:
+      spread_bps: 0.8
+      swap_long: -0.7
+      swap_short: 0.3
+      optimal_sessions:
+        - london
+        - newyork
+      pip_value: 0.0001
+  sessions:
+    asian:
+      start: 0
+      end: 9
+    london:
+      start: 8
+      end: 17
+    newyork:
+      start: 13
+      end: 22
+
+risk_limits:
+  dd_limit: 0.15
+  daily_loss_cap: 0.03
+  cvar_limit: 0.06
+  max_exposure_per_symbol: 0.15
+
+circuit_breaker:
+  daily_loss_limit: 0.015
+  drawdown_limit: 0.08
+  volatility_limit: 0.04
+
+backtest:
+  fee_bps: 2.0
+  slippage_bps: 1.0
+  spread_bps: 0.5
+  leverage: 1.0
+  weight: 0.8
+  impact_coeff: 0.001
+
+strategy_mixer:
+  threshold: 0.3
+  equal_weights: false
+
+adaptive_sizing:
+  method: kelly
+  target_risk: 0.01
+  max_drawdown: 0.30
+  aggressive_mode: false
+  target_volatility: 0.15
+  max_leverage: 1.0
+
+stationarity:
+  adf_threshold: 0.05
+  kpss_threshold: 0.05
+  hurst_mean_reverting: 0.45
+  hurst_trending: 0.55
+  hurst_high_confidence: 0.15
+
+concentration_limits:
+  max_per_symbol: 3
+  max_per_strategy_per_symbol: 2
+
+paper_trading:
+  fee_bps: 1.0
+  slippage_bps: 0.5
+  next_bar_fill: true
+  max_fill_fraction: 0.8
+  daily_loss_limit: 0.03

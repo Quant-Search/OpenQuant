@@ -6,7 +6,7 @@ Implements rigorous statistical tests to classify time series:
 - Hurst Exponent: Measure of long-term memory (Trending vs Mean Reverting).
 """
 import warnings
-from typing import Any
+from typing import Any, Dict
 
 import numpy as np
 import pandas as pd
@@ -90,22 +90,40 @@ def hurst_exponent(series: pd.Series | np.ndarray, max_lag: int = 100) -> float:
     except Exception:
         return 0.5
 
-def classify_regime(series: pd.Series) -> dict[str, Any]:
+def classify_regime(series: pd.Series, config=None) -> Dict[str, Any]:
     """
     Run battery of tests to classify regime.
     """
+    if config is None:
+        from openquant.config.manager import get_config
+        config = get_config()
+    
+    stationarity_config = config.get_section("stationarity")
+    
+    # 1. Stationarity (Mean Reversion strength)
     adf = adf_test(series)
     kpss_res = kpss_test(series)
 
     h = hurst_exponent(series)
-
-    regime: str = "Random Walk"
-
-    if h < 0.45:
+    
+    regime = "Random Walk"
+    confidence = "Low"
+    
+    hurst_mr = stationarity_config.hurst_mean_reverting
+    hurst_tr = stationarity_config.hurst_trending
+    hurst_hc = stationarity_config.hurst_high_confidence
+    
+    if h < hurst_mr:
         regime = "Mean Reverting"
-    elif h > 0.55:
+        confidence = "High" if h < (hurst_mr - hurst_hc) else "Medium"
+    elif h > hurst_tr:
         regime = "Trending"
-
+        confidence = "High" if h > (hurst_tr + hurst_hc) else "Medium"
+        
+    # Conflict check: If ADF says Stationary (Mean Reverting) but Hurst says Trending?
+    # ADF checks for unit root (random walk). If p < 0.05, it's NOT a random walk.
+    # Usually stationary implies H < 0.5.
+    
     return {
         "regime": regime,
         "hurst": float(h),

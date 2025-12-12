@@ -71,15 +71,22 @@ class AdaptiveSizer:
     
     def __init__(
         self, 
-        method: str = "volatility", 
-        target_risk: float = 0.01,
-        max_drawdown: float = 0.50,
-        aggressive_mode: bool = False
+        method: str = None, 
+        target_risk: float = None,
+        max_drawdown: float = None,
+        aggressive_mode: bool = None,
+        config=None
     ):
-        self.method = method
-        self.target_risk = target_risk
-        self.max_drawdown = max_drawdown
-        self.aggressive_mode = aggressive_mode
+        if config is None:
+            from openquant.config.manager import get_config
+            config = get_config()
+        
+        sizing_config = config.get_section("adaptive_sizing")
+        self.method = method if method is not None else sizing_config.method
+        self.target_risk = target_risk if target_risk is not None else sizing_config.target_risk
+        self.max_drawdown = max_drawdown if max_drawdown is not None else sizing_config.max_drawdown
+        self.aggressive_mode = aggressive_mode if aggressive_mode is not None else sizing_config.aggressive_mode
+        self._config = config
         
         # Trade statistics
         self.wins = 0
