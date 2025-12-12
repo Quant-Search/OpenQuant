@@ -72,3 +72,8 @@ def make_strategy(name: str, **params: Any) -> BaseStrategy:
         raise KeyError(f"Unknown strategy: {name}. Available: {list(REGISTRY.keys())}")
 
     return REGISTRY[key](**params)
+
+
+def get_strategy(name: str, **params):
+    """Alias for make_strategy for backward compatibility."""
+    return make_strategy(name, **params)

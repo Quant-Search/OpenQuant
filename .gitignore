@@ -284,3 +284,7 @@ dask-worker-space/
 configs/custom.yaml
 configs/local.yaml
 configs/*_local.yaml
+
+# Profitability Testing Framework
+reports/profitability_*.json
+logs/*.log
