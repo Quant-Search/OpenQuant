@@ -1,65 +1,57 @@
-"""Performance Attribution Analysis Module.
+"""Performance Attribution Module.
 
-Decomposes returns into components:
-- Timing Effect: Quality of entry/exit timing
-- Selection Effect: Instrument/strategy choice contribution
-- Sizing Effect: Position sizing contribution to returns
-- Cost Drag: Impact of fees, slippage, and funding costs
+Decomposes strategy returns into timing, selection, and sizing effects
+for post-trade analysis using AUDIT_TRAIL data.
 
-Integrates with audit_trail for trade-level analysis.
+Attribution Framework:
+- Timing: Returns from being in/out of market at right times
+- Selection: Returns from choosing the right assets
+- Sizing: Returns from optimal position sizing
 """
 from __future__ import annotations
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
-from typing import Dict, List, Any, Optional, Tuple
-from dataclasses import dataclass, asdict
-import json
+from typing import Dict, Any, List, Optional, Tuple
+from dataclasses import dataclass
 
-from ..storage.audit_trail import AuditTrail, EventType
-from ..analysis.tca import TCAMonitor
-from ..utils.logging import get_logger
+from openquant.storage.audit_trail import AUDIT_TRAIL, EventType
+from openquant.utils.logging import get_logger
 
 LOGGER = get_logger(__name__)
 
 
 @dataclass
 class AttributionResult:
-    """Performance attribution breakdown for a period."""
-    period_start: datetime
-    period_end: datetime
+    """Results of performance attribution analysis."""
     total_return: float
     timing_effect: float
     selection_effect: float
     sizing_effect: float
-    cost_drag: float
-    residual: float
+    interaction_effect: float
+    benchmark_return: float
+    active_return: float
+    information_ratio: float
     details: Dict[str, Any]
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""
-        result = asdict(self)
-        result['period_start'] = self.period_start.isoformat()
-        result['period_end'] = self.period_end.isoformat()
-        return result
-        
-    def summary(self) -> str:
-        """Generate human-readable summary."""
-        lines = [
-            f"Performance Attribution ({self.period_start.date()} to {self.period_end.date()})",
-            f"Total Return: {self.total_return:+.2%}",
-            f"  Timing Effect: {self.timing_effect:+.2%}",
-            f"  Selection Effect: {self.selection_effect:+.2%}",
-            f"  Sizing Effect: {self.sizing_effect:+.2%}",
-            f"  Cost Drag: {self.cost_drag:+.2%}",
-            f"  Residual: {self.residual:+.2%}"
-        ]
-        return "\n".join(lines)
+        return {
+            "total_return": self.total_return,
+            "timing_effect": self.timing_effect,
+            "selection_effect": self.selection_effect,
+            "sizing_effect": self.sizing_effect,
+            "interaction_effect": self.interaction_effect,
+            "benchmark_return": self.benchmark_return,
+            "active_return": self.active_return,
+            "information_ratio": self.information_ratio,
+            "details": self.details
+        }
 
 
 @dataclass
-class TradeAttribution:
-    """Attribution for a single trade."""
+class TradeAnalysis:
+    """Analysis of a single trade."""
     symbol: str
     strategy: str
     entry_time: datetime
@@ -68,651 +60,513 @@ class TradeAttribution:
     exit_price: float
     quantity: float
     side: str
-    pnl: float
-    pnl_pct: float
-    timing_quality: float
-    execution_quality: float
-    cost_impact: float
-    holding_period_hours: float
-    
-    
-class PerformanceAttributor:
+    return_pct: float
+    holding_period_days: float
+
+
+class PerformanceAttribution:
     """
-    Comprehensive performance attribution engine.
+    Performance attribution analyzer.
     
-    Analyzes trading performance by decomposing returns into:
-    1. Timing Effect: How well entries and exits were timed relative to price extremes
-    2. Selection Effect: How different instruments/strategies contributed to returns
-    3. Sizing Effect: How position sizing decisions impacted returns
-    4. Cost Drag: Impact of transaction costs (fees, slippage, funding)
+    Decomposes returns into:
+    1. Timing Effect: Profit from being in market vs out
+    2. Selection Effect: Profit from choosing right assets
+    3. Sizing Effect: Profit from position sizing decisions
     
     Usage:
-        attributor = PerformanceAttributor()
+        attr = PerformanceAttribution()
         
         # Analyze last 30 days
-        result = attributor.analyze(days=30)
-        print(result.summary())
+        result = attr.analyze(
+            start_time=datetime.now() - timedelta(days=30),
+            end_time=datetime.now()
+        )
         
-        # Get detailed trade-level attribution
-        trade_attrs = attributor.get_trade_level_attribution(days=7)
-        
-        # Get strategy comparison
-        strategy_perf = attributor.compare_strategies(days=30)
+        print(f"Total Return: {result.total_return:.2%}")
+        print(f"Timing Effect: {result.timing_effect:.2%}")
+        print(f"Selection Effect: {result.selection_effect:.2%}")
+        print(f"Sizing Effect: {result.sizing_effect:.2%}")
     """
     
-    def __init__(
-        self,
-        audit_trail: Optional[AuditTrail] = None,
-        tca_monitor: Optional[TCAMonitor] = None
-    ):
-        """Initialize with audit trail and TCA monitor."""
-        self.audit_trail = audit_trail or AuditTrail()
-        self.tca_monitor = tca_monitor or TCAMonitor()
+    def __init__(self, audit_trail=None):
+        """Initialize with optional audit trail instance."""
+        self.audit_trail = audit_trail or AUDIT_TRAIL
         
     def analyze(
         self,
         start_time: Optional[datetime] = None,
         end_time: Optional[datetime] = None,
-        days: int = 30
+        strategy: Optional[str] = None,
+        symbol: Optional[str] = None
     ) -> AttributionResult:
         """
-        Perform comprehensive performance attribution.
+        Perform performance attribution analysis.
         
         Args:
             start_time: Start of analysis period
             end_time: End of analysis period
-            days: Number of days to analyze if start_time not provided
+            strategy: Filter by strategy name
+            symbol: Filter by symbol
             
         Returns:
-            AttributionResult with decomposed performance
+            AttributionResult with decomposed returns
         """
+        if start_time is None:
+            start_time = datetime.now() - timedelta(days=30)
         if end_time is None:
             end_time = datetime.now()
-        if start_time is None:
-            start_time = end_time - timedelta(days=days)
             
-        LOGGER.info(f"Computing attribution from {start_time} to {end_time}")
+        LOGGER.info(f"Running attribution analysis from {start_time} to {end_time}")
         
-        trades = self._get_completed_trades(start_time, end_time)
+        trades = self._extract_trades(start_time, end_time, strategy, symbol)
         
         if not trades:
-            return AttributionResult(
-                period_start=start_time,
-                period_end=end_time,
-                total_return=0.0,
-                timing_effect=0.0,
-                selection_effect=0.0,
-                sizing_effect=0.0,
-                cost_drag=0.0,
-                residual=0.0,
-                details={"message": "No trades in period"}
-            )
+            LOGGER.warning("No trades found for attribution analysis")
+            return self._empty_result()
             
-        total_return = self._compute_total_return(trades)
-        timing_effect = self._compute_timing_effect(trades, start_time, end_time)
-        selection_effect = self._compute_selection_effect(trades)
-        sizing_effect = self._compute_sizing_effect(trades)
-        cost_drag = self._compute_cost_drag(trades, start_time, end_time)
+        total_return = self._calculate_total_return(trades)
         
-        residual = total_return - (timing_effect + selection_effect + sizing_effect + cost_drag)
+        timing_effect = self._calculate_timing_effect(trades, start_time, end_time)
+        selection_effect = self._calculate_selection_effect(trades)
+        sizing_effect = self._calculate_sizing_effect(trades)
         
-        details = {
-            "num_trades": len(trades),
-            "symbols_traded": list(set(t.get('symbol', '') for t in trades)),
-            "strategies_used": list(set(t.get('strategy', '') for t in trades)),
-            "total_volume": sum(abs(t.get('quantity', 0) * t.get('exit_price', 0)) for t in trades)
-        }
+        benchmark_return = self._calculate_benchmark_return(trades, start_time, end_time)
+        active_return = total_return - benchmark_return
         
-        result = AttributionResult(
-            period_start=start_time,
-            period_end=end_time,
+        interaction_effect = total_return - (timing_effect + selection_effect + sizing_effect)
+        
+        tracking_error = self._calculate_tracking_error(trades)
+        information_ratio = active_return / tracking_error if tracking_error > 0 else 0.0
+        
+        details = self._generate_details(trades, start_time, end_time)
+        
+        return AttributionResult(
             total_return=total_return,
             timing_effect=timing_effect,
             selection_effect=selection_effect,
             sizing_effect=sizing_effect,
-            cost_drag=cost_drag,
-            residual=residual,
+            interaction_effect=interaction_effect,
+            benchmark_return=benchmark_return,
+            active_return=active_return,
+            information_ratio=information_ratio,
             details=details
         )
+    
+    def analyze_by_strategy(
+        self,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None
+    ) -> Dict[str, AttributionResult]:
+        """Analyze attribution for each strategy separately."""
+        if start_time is None:
+            start_time = datetime.now() - timedelta(days=30)
+        if end_time is None:
+            end_time = datetime.now()
+            
+        trades = self._extract_trades(start_time, end_time)
         
-        LOGGER.info(f"Attribution complete: Total return {total_return:.2%}")
-        return result
+        strategies = set(t.strategy for t in trades)
         
-    def _get_completed_trades(
+        results = {}
+        for strat in strategies:
+            results[strat] = self.analyze(start_time, end_time, strategy=strat)
+            
+        return results
+    
+    def analyze_by_symbol(
+        self,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None
+    ) -> Dict[str, AttributionResult]:
+        """Analyze attribution for each symbol separately."""
+        if start_time is None:
+            start_time = datetime.now() - timedelta(days=30)
+        if end_time is None:
+            end_time = datetime.now()
+            
+        trades = self._extract_trades(start_time, end_time)
+        
+        symbols = set(t.symbol for t in trades)
+        
+        results = {}
+        for sym in symbols:
+            results[sym] = self.analyze(start_time, end_time, symbol=sym)
+            
+        return results
+    
+    def get_attribution_report(
+        self,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None
+    ) -> str:
+        """Generate a formatted attribution report."""
+        result = self.analyze(start_time, end_time)
+        
+        report = []
+        report.append("=" * 60)
+        report.append("PERFORMANCE ATTRIBUTION REPORT")
+        report.append("=" * 60)
+        report.append(f"Period: {start_time} to {end_time}")
+        report.append("")
+        report.append(f"Total Return:        {result.total_return:>10.2%}")
+        report.append(f"Benchmark Return:    {result.benchmark_return:>10.2%}")
+        report.append(f"Active Return:       {result.active_return:>10.2%}")
+        report.append("")
+        report.append("Attribution Breakdown:")
+        report.append(f"  Timing Effect:     {result.timing_effect:>10.2%}")
+        report.append(f"  Selection Effect:  {result.selection_effect:>10.2%}")
+        report.append(f"  Sizing Effect:     {result.sizing_effect:>10.2%}")
+        report.append(f"  Interaction:       {result.interaction_effect:>10.2%}")
+        report.append("")
+        report.append(f"Information Ratio:   {result.information_ratio:>10.2f}")
+        report.append("")
+        report.append("Details:")
+        for key, value in result.details.items():
+            if isinstance(value, float):
+                report.append(f"  {key}: {value:.4f}")
+            else:
+                report.append(f"  {key}: {value}")
+        report.append("=" * 60)
+        
+        return "\n".join(report)
+    
+    def _extract_trades(
         self,
         start_time: datetime,
-        end_time: datetime
-    ) -> List[Dict[str, Any]]:
-        """
-        Extract completed trades from audit trail.
-        
-        A completed trade is a pair of entry (ORDER_EXECUTION buy) and exit (ORDER_EXECUTION sell).
-        """
-        executions = self.audit_trail.query(
-            event_type=EventType.ORDER_EXECUTION,
+        end_time: datetime,
+        strategy: Optional[str] = None,
+        symbol: Optional[str] = None
+    ) -> List[TradeAnalysis]:
+        """Extract and match trades from audit trail."""
+        signals = self.audit_trail.query(
+            event_type=EventType.SIGNAL,
+            strategy=strategy,
+            symbol=symbol,
             start_time=start_time,
             end_time=end_time,
             limit=10000
         )
         
-        if not executions:
-            return []
-            
-        df = pd.DataFrame(executions)
-        df['timestamp'] = pd.to_datetime(df['timestamp'])
-        df = df.sort_values('timestamp')
+        executions = self.audit_trail.query(
+            event_type=EventType.ORDER_EXECUTION,
+            strategy=strategy,
+            symbol=symbol,
+            start_time=start_time,
+            end_time=end_time,
+            limit=10000
+        )
         
+        trades = self._match_trades(executions)
+        
+        return trades
+    
+    def _match_trades(self, executions: List[Dict[str, Any]]) -> List[TradeAnalysis]:
+        """Match entry and exit executions into complete trades."""
         trades = []
-        positions: Dict[Tuple[str, str], Dict] = {}
+        positions = {}
         
-        for _, row in df.iterrows():
-            symbol = row['symbol']
-            strategy = row['strategy'] or 'unknown'
-            side = row['side']
-            quantity = row['quantity']
-            price = row['price']
-            timestamp = row['timestamp']
+        for exec_event in executions:
+            symbol = exec_event.get("symbol")
+            strategy = exec_event.get("strategy")
+            side = exec_event.get("side", "").upper()
+            quantity = exec_event.get("quantity", 0)
+            price = exec_event.get("price", 0)
+            timestamp_str = exec_event.get("timestamp")
+            
+            if not all([symbol, strategy, side, timestamp_str]):
+                continue
+                
+            timestamp = pd.to_datetime(timestamp_str)
             
             key = (symbol, strategy)
             
-            if side in ['BUY', 'buy']:
-                if key not in positions or positions[key]['quantity'] <= 0:
+            if side in ["BUY", "LONG"]:
+                if key not in positions:
                     positions[key] = {
-                        'entry_time': timestamp,
-                        'entry_price': price,
-                        'quantity': quantity,
-                        'symbol': symbol,
-                        'strategy': strategy,
-                        'side': 'LONG'
+                        "symbol": symbol,
+                        "strategy": strategy,
+                        "entry_time": timestamp,
+                        "entry_price": price,
+                        "quantity": quantity,
+                        "side": "LONG"
                     }
-                else:
-                    existing = positions[key]
-                    total_qty = existing['quantity'] + quantity
-                    avg_price = (existing['entry_price'] * existing['quantity'] + 
-                                price * quantity) / total_qty
-                    existing['entry_price'] = avg_price
-                    existing['quantity'] = total_qty
-                    existing['entry_time'] = timestamp
-                    
-            elif side in ['SELL', 'sell']:
-                if key in positions and positions[key]['quantity'] > 0:
+            elif side in ["SELL", "SHORT"]:
+                if key in positions and positions[key]["side"] == "LONG":
                     pos = positions[key]
-                    exit_qty = min(quantity, pos['quantity'])
+                    holding_period = (timestamp - pos["entry_time"]).total_seconds() / 86400.0
+                    return_pct = (price - pos["entry_price"]) / pos["entry_price"]
                     
-                    pnl = (price - pos['entry_price']) * exit_qty
-                    pnl_pct = (price - pos['entry_price']) / pos['entry_price']
+                    trades.append(TradeAnalysis(
+                        symbol=symbol,
+                        strategy=strategy,
+                        entry_time=pos["entry_time"],
+                        exit_time=timestamp,
+                        entry_price=pos["entry_price"],
+                        exit_price=price,
+                        quantity=pos["quantity"],
+                        side="LONG",
+                        return_pct=return_pct,
+                        holding_period_days=holding_period
+                    ))
                     
-                    trade = {
-                        'symbol': symbol,
-                        'strategy': strategy,
-                        'entry_time': pos['entry_time'],
-                        'exit_time': timestamp,
-                        'entry_price': pos['entry_price'],
-                        'exit_price': price,
-                        'quantity': exit_qty,
-                        'side': 'LONG',
-                        'pnl': pnl,
-                        'pnl_pct': pnl_pct,
-                        'holding_period': (timestamp - pos['entry_time']).total_seconds() / 3600
+                    del positions[key]
+                elif key not in positions:
+                    positions[key] = {
+                        "symbol": symbol,
+                        "strategy": strategy,
+                        "entry_time": timestamp,
+                        "entry_price": price,
+                        "quantity": quantity,
+                        "side": "SHORT"
                     }
-                    trades.append(trade)
+            elif side == "COVER":
+                if key in positions and positions[key]["side"] == "SHORT":
+                    pos = positions[key]
+                    holding_period = (timestamp - pos["entry_time"]).total_seconds() / 86400.0
+                    return_pct = (pos["entry_price"] - price) / pos["entry_price"]
                     
-                    pos['quantity'] -= exit_qty
-                    if pos['quantity'] <= 1e-9:
-                        del positions[key]
-                else:
-                    if key not in positions:
-                        positions[key] = {
-                            'entry_time': timestamp,
-                            'entry_price': price,
-                            'quantity': -quantity,
-                            'symbol': symbol,
-                            'strategy': strategy,
-                            'side': 'SHORT'
-                        }
-                    else:
-                        existing = positions[key]
-                        total_qty = existing['quantity'] - quantity
-                        avg_price = (existing['entry_price'] * abs(existing['quantity']) + 
-                                    price * quantity) / abs(total_qty)
-                        existing['entry_price'] = avg_price
-                        existing['quantity'] = total_qty
-                        existing['entry_time'] = timestamp
-                        
-        return trades
+                    trades.append(TradeAnalysis(
+                        symbol=symbol,
+                        strategy=strategy,
+                        entry_time=pos["entry_time"],
+                        exit_time=timestamp,
+                        entry_price=pos["entry_price"],
+                        exit_price=price,
+                        quantity=pos["quantity"],
+                        side="SHORT",
+                        return_pct=return_pct,
+                        holding_period_days=holding_period
+                    ))
+                    
+                    del positions[key]
         
-    def _compute_total_return(self, trades: List[Dict[str, Any]]) -> float:
-        """Compute total return from all trades."""
+        return trades
+    
+    def _calculate_total_return(self, trades: List[TradeAnalysis]) -> float:
+        """Calculate total portfolio return."""
         if not trades:
             return 0.0
-        total_pnl = sum(t.get('pnl', 0) for t in trades)
-        total_notional = sum(abs(t.get('entry_price', 0) * t.get('quantity', 0)) for t in trades)
-        return total_pnl / total_notional if total_notional > 0 else 0.0
+            
+        total_weights = sum(abs(t.quantity * t.entry_price) for t in trades)
         
-    def _compute_timing_effect(
+        if total_weights == 0:
+            return 0.0
+            
+        weighted_return = sum(
+            (abs(t.quantity * t.entry_price) / total_weights) * t.return_pct
+            for t in trades
+        )
+        
+        return weighted_return
+    
+    def _calculate_timing_effect(
         self,
-        trades: List[Dict[str, Any]],
+        trades: List[TradeAnalysis],
         start_time: datetime,
         end_time: datetime
     ) -> float:
         """
-        Compute timing effect: how well entries and exits were timed.
+        Calculate timing effect: returns from being in/out at right times.
         
-        Measures how close entries were to period lows and exits to period highs.
-        Positive timing effect means buying near lows and selling near highs.
+        Compares actual returns during holding periods to hypothetical
+        buy-and-hold returns.
         """
         if not trades:
             return 0.0
             
-        timing_scores = []
+        total_days = (end_time - start_time).days
+        if total_days == 0:
+            return 0.0
+            
+        holding_days = sum(t.holding_period_days for t in trades)
+        exposure_ratio = holding_days / (total_days * len(set((t.symbol, t.strategy) for t in trades)))
         
+        if exposure_ratio > 1.0:
+            exposure_ratio = 1.0
+            
+        avg_return_per_day = self._calculate_total_return(trades) / holding_days if holding_days > 0 else 0
+        
+        bah_return = avg_return_per_day * total_days
+        
+        timing_effect = self._calculate_total_return(trades) - (bah_return * exposure_ratio)
+        
+        return timing_effect
+    
+    def _calculate_selection_effect(self, trades: List[TradeAnalysis]) -> float:
+        """
+        Calculate selection effect: returns from choosing right assets.
+        
+        Measures alpha from security selection vs equal-weighted portfolio.
+        """
+        if not trades:
+            return 0.0
+            
+        by_symbol = {}
         for trade in trades:
-            symbol = trade.get('symbol')
-            entry_price = trade.get('entry_price', 0)
-            exit_price = trade.get('exit_price', 0)
-            
-            signals = self.audit_trail.query(
-                event_type=EventType.SIGNAL,
-                symbol=symbol,
-                start_time=start_time,
-                end_time=end_time,
-                limit=1000
-            )
-            
-            if not signals:
-                continue
-                
-            prices = [s.get('price', 0) for s in signals if s.get('price')]
-            if not prices:
-                continue
-                
-            price_min = min(prices)
-            price_max = max(prices)
-            price_range = price_max - price_min
-            
-            if price_range > 0:
-                entry_timing = 1.0 - (entry_price - price_min) / price_range
-                exit_timing = (exit_price - price_min) / price_range
-                
-                timing_score = (entry_timing + exit_timing) / 2.0
-                timing_scores.append(timing_score)
-                
-        if not timing_scores:
-            return 0.0
-            
-        avg_timing = np.mean(timing_scores)
-        return (avg_timing - 0.5) * 0.1
+            if trade.symbol not in by_symbol:
+                by_symbol[trade.symbol] = []
+            by_symbol[trade.symbol].append(trade)
         
-    def _compute_selection_effect(self, trades: List[Dict[str, Any]]) -> float:
+        equal_weight_return = sum(
+            np.mean([t.return_pct for t in symbol_trades])
+            for symbol_trades in by_symbol.values()
+        ) / len(by_symbol)
+        
+        actual_return = self._calculate_total_return(trades)
+        
+        selection_effect = actual_return - equal_weight_return
+        
+        return selection_effect
+    
+    def _calculate_sizing_effect(self, trades: List[TradeAnalysis]) -> float:
         """
-        Compute selection effect: contribution from choosing instruments/strategies.
+        Calculate sizing effect: returns from position sizing.
         
-        Measures how strategy and instrument choices contributed to overall returns
-        by comparing individual performance to equal-weighted average.
+        Measures impact of varying position sizes vs equal sizing.
         """
         if not trades:
             return 0.0
             
-        df = pd.DataFrame(trades)
+        equal_sized_return = np.mean([t.return_pct for t in trades])
         
-        by_strategy = df.groupby('strategy').agg({
-            'pnl': 'sum',
-            'quantity': 'count'
-        }).reset_index()
+        actual_return = self._calculate_total_return(trades)
         
-        by_strategy['pnl_per_trade'] = by_strategy['pnl'] / by_strategy['quantity']
-        
-        avg_pnl_per_trade = df['pnl'].sum() / len(df)
-        
-        weighted_sum = 0.0
-        for _, row in by_strategy.iterrows():
-            deviation = row['pnl_per_trade'] - avg_pnl_per_trade
-            weight = row['quantity'] / len(df)
-            weighted_sum += deviation * weight
-            
-        total_notional = sum(abs(t.get('entry_price', 0) * t.get('quantity', 0)) for t in trades)
-        return weighted_sum / total_notional if total_notional > 0 else 0.0
-        
-    def _compute_sizing_effect(self, trades: List[Dict[str, Any]]) -> float:
-        """
-        Compute sizing effect: contribution from position sizing decisions.
-        
-        Measures how position sizing contributed to returns by comparing
-        actual returns to equal-sized returns.
-        """
-        if not trades:
-            return 0.0
-            
-        df = pd.DataFrame(trades)
-        df['notional'] = df['entry_price'] * df['quantity'].abs()
-        
-        total_notional = df['notional'].sum()
-        if total_notional == 0:
-            return 0.0
-            
-        df['weight'] = df['notional'] / total_notional
-        
-        actual_return = (df['pnl'] * df['weight']).sum() / total_notional
-        
-        equal_weight = 1.0 / len(df)
-        equal_weighted_return = (df['pnl'] * equal_weight).sum() / total_notional
-        
-        sizing_effect = actual_return - equal_weighted_return
+        sizing_effect = actual_return - equal_sized_return
         
         return sizing_effect
-        
-    def _compute_cost_drag(
+    
+    def _calculate_benchmark_return(
         self,
-        trades: List[Dict[str, Any]],
+        trades: List[TradeAnalysis],
         start_time: datetime,
         end_time: datetime
     ) -> float:
         """
-        Compute cost drag from fees, slippage, and funding.
+        Calculate benchmark return.
         
-        Aggregates all transaction costs and expresses as percentage of total notional.
+        Uses equal-weighted buy-and-hold of all traded symbols.
         """
-        try:
-            tca_stats = self.tca_monitor.get_stats()
+        if not trades:
+            return 0.0
             
-            total_fees = tca_stats.get('total_fees', 0.0)
-            avg_slippage_bps = tca_stats.get('avg_slippage_bps', 0.0)
-            
-            total_notional = sum(abs(t.get('entry_price', 0) * t.get('quantity', 0)) for t in trades)
-            
-            if total_notional == 0:
-                return 0.0
-                
-            fee_impact = -total_fees / total_notional
-            
-            slippage_impact = -avg_slippage_bps / 10000.0
-            
-            return fee_impact + slippage_impact
-            
-        except Exception as e:
-            LOGGER.warning(f"Failed to compute cost drag: {e}")
-            return -0.001
-            
-    def get_trade_level_attribution(
-        self,
-        start_time: Optional[datetime] = None,
-        end_time: Optional[datetime] = None,
-        days: int = 7
-    ) -> List[TradeAttribution]:
-        """
-        Get detailed attribution for individual trades.
-        
-        Args:
-            start_time: Start of analysis period
-            end_time: End of analysis period
-            days: Number of days to analyze if start_time not provided
-            
-        Returns:
-            List of TradeAttribution objects
-        """
-        if end_time is None:
-            end_time = datetime.now()
-        if start_time is None:
-            start_time = end_time - timedelta(days=days)
-            
-        trades = self._get_completed_trades(start_time, end_time)
-        
-        attributions = []
-        
+        by_symbol = {}
         for trade in trades:
-            symbol = trade.get('symbol', '')
-            strategy = trade.get('strategy', 'unknown')
-            
-            signals = self.audit_trail.query(
-                event_type=EventType.SIGNAL,
-                symbol=symbol,
-                start_time=start_time,
-                end_time=end_time,
-                limit=1000
-            )
-            
-            timing_quality = 0.0
-            if signals:
-                prices = [s.get('price', 0) for s in signals if s.get('price')]
-                if prices:
-                    price_min = min(prices)
-                    price_max = max(prices)
-                    price_range = price_max - price_min
-                    
-                    if price_range > 0:
-                        entry_price = trade.get('entry_price', 0)
-                        exit_price = trade.get('exit_price', 0)
-                        entry_timing = 1.0 - (entry_price - price_min) / price_range
-                        exit_timing = (exit_price - price_min) / price_range
-                        timing_quality = (entry_timing + exit_timing) / 2.0
-                        
-            execution_quality = 1.0
-            
-            cost_impact = -0.001
-            
-            attr = TradeAttribution(
-                symbol=symbol,
-                strategy=strategy,
-                entry_time=trade.get('entry_time'),
-                exit_time=trade.get('exit_time'),
-                entry_price=trade.get('entry_price', 0),
-                exit_price=trade.get('exit_price', 0),
-                quantity=trade.get('quantity', 0),
-                side=trade.get('side', 'LONG'),
-                pnl=trade.get('pnl', 0),
-                pnl_pct=trade.get('pnl_pct', 0),
-                timing_quality=timing_quality,
-                execution_quality=execution_quality,
-                cost_impact=cost_impact,
-                holding_period_hours=trade.get('holding_period', 0)
-            )
-            attributions.append(attr)
-            
-        return attributions
+            if trade.symbol not in by_symbol:
+                by_symbol[trade.symbol] = []
+            by_symbol[trade.symbol].append(trade)
         
-    def compare_strategies(
+        symbol_returns = []
+        for symbol, symbol_trades in by_symbol.items():
+            first_trade = min(symbol_trades, key=lambda t: t.entry_time)
+            last_trade = max(symbol_trades, key=lambda t: t.exit_time)
+            
+            bah_return = (last_trade.exit_price - first_trade.entry_price) / first_trade.entry_price
+            symbol_returns.append(bah_return)
+        
+        benchmark_return = np.mean(symbol_returns) if symbol_returns else 0.0
+        
+        return benchmark_return
+    
+    def _calculate_tracking_error(self, trades: List[TradeAnalysis]) -> float:
+        """Calculate tracking error vs benchmark."""
+        if len(trades) < 2:
+            return 0.0
+            
+        returns = [t.return_pct for t in trades]
+        
+        return float(np.std(returns, ddof=1))
+    
+    def _generate_details(
         self,
-        start_time: Optional[datetime] = None,
-        end_time: Optional[datetime] = None,
-        days: int = 30
-    ) -> Dict[str, Dict[str, float]]:
-        """
-        Compare performance attribution across strategies.
-        
-        Args:
-            start_time: Start of analysis period
-            end_time: End of analysis period
-            days: Number of days to analyze if start_time not provided
-            
-        Returns:
-            Dictionary mapping strategy names to attribution metrics
-        """
-        if end_time is None:
-            end_time = datetime.now()
-        if start_time is None:
-            start_time = end_time - timedelta(days=days)
-            
-        trades = self._get_completed_trades(start_time, end_time)
-        
-        if not trades:
-            return {}
-            
-        df = pd.DataFrame(trades)
-        
-        strategy_metrics = {}
-        
-        for strategy in df['strategy'].unique():
-            strategy_trades = [t for t in trades if t.get('strategy') == strategy]
-            
-            if not strategy_trades:
-                continue
-                
-            total_return = self._compute_total_return(strategy_trades)
-            timing_effect = self._compute_timing_effect(strategy_trades, start_time, end_time)
-            sizing_effect = self._compute_sizing_effect(strategy_trades)
-            cost_drag = self._compute_cost_drag(strategy_trades, start_time, end_time)
-            
-            num_trades = len(strategy_trades)
-            win_rate = sum(1 for t in strategy_trades if t.get('pnl', 0) > 0) / num_trades
-            avg_pnl = sum(t.get('pnl', 0) for t in strategy_trades) / num_trades
-            
-            strategy_metrics[strategy] = {
-                'total_return': total_return,
-                'timing_effect': timing_effect,
-                'sizing_effect': sizing_effect,
-                'cost_drag': cost_drag,
-                'num_trades': num_trades,
-                'win_rate': win_rate,
-                'avg_pnl': avg_pnl,
-                'total_pnl': sum(t.get('pnl', 0) for t in strategy_trades)
-            }
-            
-        return strategy_metrics
-        
-    def compare_instruments(
-        self,
-        start_time: Optional[datetime] = None,
-        end_time: Optional[datetime] = None,
-        days: int = 30
-    ) -> Dict[str, Dict[str, float]]:
-        """
-        Compare performance attribution across instruments.
-        
-        Args:
-            start_time: Start of analysis period
-            end_time: End of analysis period
-            days: Number of days to analyze if start_time not provided
-            
-        Returns:
-            Dictionary mapping symbols to attribution metrics
-        """
-        if end_time is None:
-            end_time = datetime.now()
-        if start_time is None:
-            start_time = end_time - timedelta(days=days)
-            
-        trades = self._get_completed_trades(start_time, end_time)
-        
-        if not trades:
-            return {}
-            
-        df = pd.DataFrame(trades)
-        
-        instrument_metrics = {}
-        
-        for symbol in df['symbol'].unique():
-            symbol_trades = [t for t in trades if t.get('symbol') == symbol]
-            
-            if not symbol_trades:
-                continue
-                
-            total_return = self._compute_total_return(symbol_trades)
-            timing_effect = self._compute_timing_effect(symbol_trades, start_time, end_time)
-            
-            num_trades = len(symbol_trades)
-            win_rate = sum(1 for t in symbol_trades if t.get('pnl', 0) > 0) / num_trades
-            avg_holding = sum(t.get('holding_period', 0) for t in symbol_trades) / num_trades
-            
-            instrument_metrics[symbol] = {
-                'total_return': total_return,
-                'timing_effect': timing_effect,
-                'num_trades': num_trades,
-                'win_rate': win_rate,
-                'avg_holding_hours': avg_holding,
-                'total_pnl': sum(t.get('pnl', 0) for t in symbol_trades)
-            }
-            
-        return instrument_metrics
-        
-    def generate_report(
-        self,
-        start_time: Optional[datetime] = None,
-        end_time: Optional[datetime] = None,
-        days: int = 30,
-        output_path: str = "data/attribution_report.json"
+        trades: List[TradeAnalysis],
+        start_time: datetime,
+        end_time: datetime
     ) -> Dict[str, Any]:
-        """
-        Generate comprehensive attribution report and save to file.
-        
-        Args:
-            start_time: Start of analysis period
-            end_time: End of analysis period
-            days: Number of days to analyze if start_time not provided
-            output_path: Path to save JSON report
+        """Generate detailed statistics."""
+        if not trades:
+            return {}
             
-        Returns:
-            Complete report dictionary
-        """
-        if end_time is None:
-            end_time = datetime.now()
-        if start_time is None:
-            start_time = end_time - timedelta(days=days)
-            
-        LOGGER.info("Generating comprehensive attribution report...")
+        total_trades = len(trades)
+        winning_trades = [t for t in trades if t.return_pct > 0]
+        losing_trades = [t for t in trades if t.return_pct < 0]
         
-        overall = self.analyze(start_time, end_time)
+        by_strategy = {}
+        for trade in trades:
+            if trade.strategy not in by_strategy:
+                by_strategy[trade.strategy] = []
+            by_strategy[trade.strategy].append(trade)
         
-        strategy_comparison = self.compare_strategies(start_time, end_time)
+        by_symbol = {}
+        for trade in trades:
+            if trade.symbol not in by_symbol:
+                by_symbol[trade.symbol] = []
+            by_symbol[trade.symbol].append(trade)
         
-        instrument_comparison = self.compare_instruments(start_time, end_time)
-        
-        trade_level = self.get_trade_level_attribution(start_time, end_time)
-        
-        report = {
-            'generated_at': datetime.now().isoformat(),
-            'period': {
-                'start': start_time.isoformat(),
-                'end': end_time.isoformat(),
-                'days': days
+        return {
+            "total_trades": total_trades,
+            "winning_trades": len(winning_trades),
+            "losing_trades": len(losing_trades),
+            "win_rate": len(winning_trades) / total_trades if total_trades > 0 else 0,
+            "avg_return_per_trade": np.mean([t.return_pct for t in trades]),
+            "avg_holding_period_days": np.mean([t.holding_period_days for t in trades]),
+            "strategies_traded": list(by_strategy.keys()),
+            "symbols_traded": list(by_symbol.keys()),
+            "best_trade_return": max(t.return_pct for t in trades),
+            "worst_trade_return": min(t.return_pct for t in trades),
+            "strategy_returns": {
+                strat: np.mean([t.return_pct for t in strat_trades])
+                for strat, strat_trades in by_strategy.items()
             },
-            'overall_attribution': overall.to_dict(),
-            'strategy_comparison': strategy_comparison,
-            'instrument_comparison': instrument_comparison,
-            'trade_level_sample': [
-                {
-                    'symbol': t.symbol,
-                    'strategy': t.strategy,
-                    'pnl_pct': t.pnl_pct,
-                    'timing_quality': t.timing_quality,
-                    'holding_period_hours': t.holding_period_hours
-                }
-                for t in trade_level[:10]
-            ],
-            'summary': {
-                'total_trades': len(trade_level),
-                'profitable_trades': sum(1 for t in trade_level if t.pnl > 0),
-                'average_timing_quality': np.mean([t.timing_quality for t in trade_level]) if trade_level else 0,
-                'average_holding_hours': np.mean([t.holding_period_hours for t in trade_level]) if trade_level else 0
+            "symbol_returns": {
+                sym: np.mean([t.return_pct for t in sym_trades])
+                for sym, sym_trades in by_symbol.items()
             }
         }
-        
-        try:
-            from pathlib import Path
-            output_file = Path(output_path)
-            output_file.parent.mkdir(parents=True, exist_ok=True)
-            
-            with open(output_file, 'w') as f:
-                json.dump(report, f, indent=2)
-                
-            LOGGER.info(f"Attribution report saved to {output_path}")
-            
-        except Exception as e:
-            LOGGER.error(f"Failed to save attribution report: {e}")
-            
-        return report
+    
+    def _empty_result(self) -> AttributionResult:
+        """Return empty result when no data available."""
+        return AttributionResult(
+            total_return=0.0,
+            timing_effect=0.0,
+            selection_effect=0.0,
+            sizing_effect=0.0,
+            interaction_effect=0.0,
+            benchmark_return=0.0,
+            active_return=0.0,
+            information_ratio=0.0,
+            details={}
+        )
 
 
-def quick_attribution(days: int = 30) -> AttributionResult:
+def analyze_recent_performance(days: int = 30) -> AttributionResult:
     """
-    Convenience function for quick attribution analysis.
+    Convenience function to analyze recent performance.
     
     Args:
-        days: Number of days to analyze
+        days: Number of days to look back
         
     Returns:
-        AttributionResult
+        AttributionResult for the period
     """
-    attributor = PerformanceAttributor()
-    result = attributor.analyze(days=days)
-    print(result.summary())
-    return result
+    attr = PerformanceAttribution()
+    end_time = datetime.now()
+    start_time = end_time - timedelta(days=days)
+    
+    return attr.analyze(start_time=start_time, end_time=end_time)
+
+
+def generate_attribution_report(days: int = 30) -> str:
+    """
+    Generate a formatted attribution report.
+    
+    Args:
+        days: Number of days to look back
+        
+    Returns:
+        Formatted report string
+    """
+    attr = PerformanceAttribution()
+    end_time = datetime.now()
+    start_time = end_time - timedelta(days=days)
+    
+    return attr.get_attribution_report(start_time=start_time, end_time=end_time)
