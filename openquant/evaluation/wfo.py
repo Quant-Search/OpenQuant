@@ -7,7 +7,7 @@ this performs rolling train/test splits. For each split:
 Aggregate test Sharpe across splits.
 """
 from __future__ import annotations
-from typing import Dict, Any, Iterable, Tuple, List
+from typing import Dict, Any, Iterable, Tuple, List, Optional
 from dataclasses import dataclass
 from datetime import datetime
 import itertools
@@ -26,6 +26,10 @@ class WFOSpec:
     cpcv_n_test_splits: int = 2
     cpcv_purge_pct: float = 0.02
     cpcv_embargo_pct: float = 0.01
+    use_monte_carlo: bool = False  # Run Monte Carlo robustness testing
+    mc_n_simulations: int = 100  # Number of MC simulations (reduced from default for WFO)
+    mc_block_size: int = 20  # Block size for path-dependent bootstrap
+    mc_param_perturbation_pct: float = 0.1  # Parameter perturbation percentage
 
 
 def _split_windows(index: pd.DatetimeIndex, n_splits: int) -> List[Tuple[pd.Timestamp, pd.Timestamp]]:
@@ -49,8 +53,9 @@ def walk_forward_evaluate(
     weight: float = 1.0,
     wfo: WFOSpec = WFOSpec(),
 ) -> Dict[str, Any]:
-    """Run WFO evaluation with optional CPCV and return aggregated metrics.
-    Returns dict with keys: test_sharpes (list), mean_test_sharpe, best_params_per_split
+    """Run WFO evaluation with optional CPCV and Monte Carlo robustness testing.
+    Returns dict with keys: test_sharpes (list), mean_test_sharpe, best_params_per_split, 
+    and optionally monte_carlo_results
     """
     # Use CPCV if enabled
     if wfo.use_cpcv:
@@ -105,11 +110,52 @@ def walk_forward_evaluate(
         test_sharpes.append(float(test_s))
 
     mean_test_sharpe = float(np.mean(test_sharpes)) if test_sharpes else 0.0
-    return {
+    
+    result = {
         "test_sharpes": test_sharpes,
         "mean_test_sharpe": mean_test_sharpe,
         "best_params_per_split": best_params,
     }
+    
+    # Run Monte Carlo robustness testing if enabled
+    if wfo.use_monte_carlo and best_params:
+        from .monte_carlo import run_comprehensive_mc, MonteCarloConfig, evaluate_robustness
+        from ..utils.logging import get_logger
+        
+        LOGGER = get_logger(__name__)
+        LOGGER.info("Running Monte Carlo robustness testing on best parameters")
+        
+        # Use the most recent best params (or average if numeric)
+        final_params = best_params[-1]
+        
+        mc_config = MonteCarloConfig(
+            n_simulations=wfo.mc_n_simulations,
+            block_size=wfo.mc_block_size,
+            param_perturbation_pct=wfo.mc_param_perturbation_pct
+        )
+        
+        try:
+            mc_results = run_comprehensive_mc(
+                df=df,
+                strategy_factory=strategy_factory,
+                params=final_params,
+                config=mc_config,
+                fee_bps=fee_bps,
+                weight=weight
+            )
+            
+            robustness_eval = evaluate_robustness(mc_results)
+            
+            result["monte_carlo_results"] = mc_results
+            result["robustness_evaluation"] = robustness_eval
+            
+            LOGGER.info(f"Monte Carlo testing completed: Robustness rating = {robustness_eval['rating']}")
+            
+        except Exception as e:
+            LOGGER.error(f"Monte Carlo testing failed: {e}")
+            result["monte_carlo_error"] = str(e)
+    
+    return result
 
 
 def _walk_forward_cpcv(
@@ -180,9 +226,46 @@ def _walk_forward_cpcv(
     
     LOGGER.info(f"CPCV completed: {len(test_sharpes)} folds, mean Sharpe: {mean_test_sharpe:.2f}")
     
-    return {
+    result = {
         "test_sharpes": test_sharpes,
         "mean_test_sharpe": mean_test_sharpe,
         "best_params_per_split": best_params,
     }
+    
+    # Run Monte Carlo robustness testing if enabled
+    if wfo.use_monte_carlo and best_params:
+        from .monte_carlo import run_comprehensive_mc, MonteCarloConfig, evaluate_robustness
+        
+        LOGGER.info("Running Monte Carlo robustness testing on best parameters")
+        
+        final_params = best_params[-1]
+        
+        mc_config = MonteCarloConfig(
+            n_simulations=wfo.mc_n_simulations,
+            block_size=wfo.mc_block_size,
+            param_perturbation_pct=wfo.mc_param_perturbation_pct
+        )
+        
+        try:
+            mc_results = run_comprehensive_mc(
+                df=df,
+                strategy_factory=strategy_factory,
+                params=final_params,
+                config=mc_config,
+                fee_bps=fee_bps,
+                weight=weight
+            )
+            
+            robustness_eval = evaluate_robustness(mc_results)
+            
+            result["monte_carlo_results"] = mc_results
+            result["robustness_evaluation"] = robustness_eval
+            
+            LOGGER.info(f"Monte Carlo testing completed: Robustness rating = {robustness_eval['rating']}")
+            
+        except Exception as e:
+            LOGGER.error(f"Monte Carlo testing failed: {e}")
+            result["monte_carlo_error"] = str(e)
+    
+    return result
 
