@@ -94,15 +94,30 @@ class RobotScheduler:
         self.status_message = "Stopping..."
         self._stop_event.set()
         
-        # Stop position monitor if running
         if self._position_monitor:
             try:
                 self._position_monitor.stop()
             except Exception as e:
                 LOGGER.error(f"Error stopping position monitor: {e}")
         
-        # Don't join here to avoid blocking GUI if loop is sleeping long
-        # The loop will exit on its own
+        try:
+            from openquant.paper.io import load_state, save_state
+            from pathlib import Path
+            state_path = Path("data/paper_state.json")
+            state = load_state(state_path)
+            save_state(state, state_path)
+            LOGGER.info("Portfolio state saved during scheduler stop")
+        except Exception as e:
+            LOGGER.error(f"Error saving state during shutdown: {e}")
+        
+        try:
+            from openquant.risk.circuit_breaker import CIRCUIT_BREAKER
+            if hasattr(CIRCUIT_BREAKER, '_save_state'):
+                CIRCUIT_BREAKER._save_state()
+                LOGGER.info("Circuit breaker state persisted during scheduler stop")
+        except Exception as e:
+            LOGGER.error(f"Error persisting circuit breaker during shutdown: {e}")
+        
         self.is_running = False
         self.status_message = "Stopped"
         self.next_run_time = None
@@ -152,7 +167,6 @@ class RobotScheduler:
         """Execute one full robot cycle: Research -> Allocation -> Execution."""
         LOGGER.info("Auto-Pilot: Starting Cycle")
 
-        # Lazy imports to avoid circular deps
         from openquant.research.universe_runner import run_universe
         from openquant.paper.io import load_state, save_state
         from openquant.paper.simulator import MarketSnapshot, compute_rebalance_orders, execute_orders
@@ -165,6 +179,7 @@ class RobotScheduler:
         from openquant.risk.adaptive_sizing import AdaptiveSizer
         from openquant.trading.trade_filter import TradeFilter, FilterConfig, TradeSignal, FilterResult
         from openquant.reporting.performance_tracker import PERFORMANCE_TRACKER
+        from openquant.utils.shutdown_handler import SHUTDOWN_HANDLER
         from pathlib import Path
         import json
         import ccxt
@@ -383,13 +398,10 @@ class RobotScheduler:
         
         # Build snapshot
         prices = {}
-        # Initialize MT5 if needed for pricing
-        # Initialize MT5 if needed for pricing
         mt5_broker = None
         if cfg.get("use_mt5"):
             try:
                 from openquant.broker.mt5_broker import MT5Broker
-                # Initialize broker (reads creds from env if not in config)
                 creds = cfg.get("mt5_creds", {})
                 mt5_broker = MT5Broker(
                     login=(int(creds["login"]) if creds.get("login") else None),
@@ -397,6 +409,7 @@ class RobotScheduler:
                     server=creds.get("server"),
                     terminal_path=creds.get("path")
                 )
+                SHUTDOWN_HANDLER.register_broker(mt5_broker)
             except Exception as e:
                 LOGGER.warning(f"MT5 init exception: {e}")
 
@@ -726,6 +739,7 @@ class RobotScheduler:
                     secret_key=cfg.get("alpaca_secret"), 
                     paper=cfg.get("alpaca_paper", True)
                 )
+                SHUTDOWN_HANDLER.register_broker(broker)
                 
                 # Simple Sync: 
                 # 1. Get current Alpaca positions

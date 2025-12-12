@@ -9,22 +9,32 @@ import argparse
 import subprocess
 from pathlib import Path
 
-# Ensure project root is in path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 from openquant.gui.scheduler import SCHEDULER
 from openquant.utils.logging import get_logger
+from openquant.utils.shutdown_handler import SHUTDOWN_HANDLER
 
 LOGGER = get_logger(__name__)
 
 DASHBOARD_PROCESS = None
 
 def signal_handler(sig, frame):
-    print("\n🛑 Stopping Robot (Ctrl+C)...")
-    SCHEDULER.stop()
+    print("\n🛑 Graceful Shutdown Initiated (Ctrl+C)...")
+    
     if DASHBOARD_PROCESS:
-        DASHBOARD_PROCESS.terminate()
+        try:
+            DASHBOARD_PROCESS.terminate()
+            DASHBOARD_PROCESS.wait(timeout=5)
+        except Exception as e:
+            LOGGER.warning(f"Error terminating dashboard: {e}")
+            try:
+                DASHBOARD_PROCESS.kill()
+            except:
+                pass
+    
+    SHUTDOWN_HANDLER.shutdown(sig, frame)
     sys.exit(0)
 
 def main():
@@ -44,8 +54,10 @@ def main():
     print(f"   Top N:    {args.top_n}")
     print(f"   MT5:      {'Enabled' if args.mt5 else 'Disabled'}")
     
-    # Register signal handler
     signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+    
+    SHUTDOWN_HANDLER.register_scheduler(SCHEDULER)
     
     # Launch Dashboard
     if not args.no_dashboard:
