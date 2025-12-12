@@ -218,6 +218,7 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 
+<<<<<<< HEAD
 # Test artifacts
 .pytest_cache/
 *.pytest_cache
@@ -263,3 +264,13 @@ logs/
 
 # OpenQuant - Strategy comparison reports
 reports/strategy_comparison/
+=======
+# Numba cache (JIT compilation)
+__pycache__/
+*.nbc
+*.nbi
+
+# Dask cache and temporary files
+dask-worker-space/
+.dask/
+>>>>>>> 9bae6a0 (Optimize hot paths in backtest engine using NumPy vectorization, Numba JIT compilation, and Dask parallelization)

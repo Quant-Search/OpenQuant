@@ -21,3 +21,5 @@ scipy
 hurst
 alpaca-py
 scikit-learn
+numba
+dask[dataframe]
