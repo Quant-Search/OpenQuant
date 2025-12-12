@@ -288,3 +288,10 @@ configs/*_local.yaml
 # Profitability Testing Framework
 reports/profitability_*.json
 logs/*.log
+
+# OpenQuant Reports
+# Generated backtest reports (PDF, HTML)
+reports/*.pdf
+reports/*.html
+reports/*.png
+reports/*.jpg

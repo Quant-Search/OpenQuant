@@ -1,3 +1,39 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "openquant"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "pandas",
+    "numpy",
+    "pyyaml",
+    "python-dotenv",
+    "pytest",
+    "yfinance",
+    "ccxt",
+    "matplotlib",
+    "duckdb",
+    "optuna",
+    "streamlit",
+    "pyinstaller",
+    "plotly",
+    "psutil",
+    "statsmodels",
+    "arch",
+    "filterpy",
+    "scipy",
+    "hurst",
+    "alpaca-py",
+    "scikit-learn",
+]
+
+[tool.setuptools.packages.find]
+include = ["openquant*"]
+exclude = ["tests*", "data*", "logs*", "reports*", "diagrams*", "AppDir*", "MagicMock*"]
+
 [tool.ruff]
 line-length = 100
 target-version = "py311"
