@@ -59,6 +59,10 @@ pytest_*.txt
 # Local data cache (parquet/csv)
 data_cache/
 
+# DuckDB database files (TCA, execution quality, results)
+*.duckdb
+*.duckdb.wal
+
 # Translations
 *.mo
 *.pot

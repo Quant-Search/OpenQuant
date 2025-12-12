@@ -1,5 +1,21 @@
 ## [Unreleased]
 
+### Execution Quality Monitoring (NEW)
+- **ExecutionQualityMonitor**: Comprehensive order execution tracking in `openquant/analysis/execution_quality.py`
+  - Fill rate monitoring (percentage of orders successfully filled)
+  - Rejection rate tracking (orders rejected or cancelled)
+  - Slippage distribution analysis with percentiles and histograms
+  - Benchmark comparison against historical TCA data
+  - Automated alerts for execution quality degradation
+  - Database persistence of metrics snapshots and alerts
+- **Key Metrics**: Fill rate, rejection rate, partial fill rate, average/median slippage, slippage volatility, fill time, trading fees
+- **Alert Types**: fill_rate_degradation, rejection_rate_high, slippage_high, slippage_volatility_high
+- **Configurable Thresholds**: Customize for high/medium/low frequency trading styles
+- **Scripts**: 
+  - `scripts/monitor_execution_quality.py` - Standalone monitoring tool
+  - `scripts/execution_quality_integration_example.py` - Integration examples
+- **Documentation**: See `EXECUTION_QUALITY.md` for detailed usage guide
+
 ### Single GUI Dashboard (NEW)
 - **Consolidated Control Center**: All robot controls in one Streamlit dashboard
 - **Risk Monitor Page**: Real-time view of kill switch, circuit breaker, market hours status
