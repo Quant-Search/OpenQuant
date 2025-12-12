@@ -14,6 +14,7 @@ from .state import PortfolioState, Key
 from ..risk.kill_switch import KILL_SWITCH
 from ..risk.circuit_breaker import CIRCUIT_BREAKER
 from ..risk.kelly_criterion import KellyCriterion, compute_rolling_volatility
+from ..risk.trade_validator import TRADE_VALIDATOR
 
 
 @dataclass
@@ -262,7 +263,19 @@ def execute_orders(
 
     orders_count = 0
     turnover = 0.0
+    blocked_count = 0
     fills: List[Tuple[Key, float, float, float]] = []
+    
+    # Calculate current equity and positions for validation
+    equity = state.cash
+    for k, u in state.holdings.items():
+        p = float(snap.prices.get(k, 0.0)) if snap else 0.0
+        equity += float(u) * p
+    
+    current_positions = {}
+    for k, u in state.holdings.items():
+        p = float(snap.prices.get(k, 0.0)) if snap else 0.0
+        current_positions[str(k)] = abs(float(u)) * p
 
     # Normalize input: if orders is list of 3-tuples, pad with None
     # This is a bit hacky to maintain backward compat if caller passes 3-tuples,
@@ -280,6 +293,28 @@ def execute_orders(
             continue
         
         side = 1.0 if delta_u > 0 else -1.0
+        
+        # COMPREHENSIVE RISK VALIDATION
+        validation_price = ref_price
+        if next_bar_fill and snap and k in snap.next_prices:
+            validation_price = snap.next_prices[k]
+        
+        result = TRADE_VALIDATOR.validate_trade(
+            symbol=str(k),
+            quantity=abs(delta_u),
+            price=validation_price,
+            side="buy" if side > 0 else "sell",
+            portfolio_value=equity,
+            current_positions=current_positions,
+            current_equity=equity,
+        )
+        
+        if not result.allowed:
+            blocked_count += 1
+            from openquant.utils.logging import get_logger
+            logger = get_logger(__name__)
+            logger.warning(f"Paper trade blocked for {k}: {result.reason}")
+            continue
         
         # Use next-bar price if enabled and available
         exec_price = ref_price
@@ -338,8 +373,13 @@ def execute_orders(
         orders_count += 1
         turnover += notional
         fills.append((k, filled_delta_u, exec_price, fee_paid))
-        
-    return {"orders": float(orders_count), "turnover": float(turnover)}, fills
+    
+    summary = {
+        "orders": float(orders_count), 
+        "turnover": float(turnover),
+        "blocked": float(blocked_count)
+    }
+    return summary, fills
 
 
 def check_exits(state: PortfolioState, snap: MarketSnapshot) -> List[Tuple[Key, float, float, Optional[float], Optional[float]]]:

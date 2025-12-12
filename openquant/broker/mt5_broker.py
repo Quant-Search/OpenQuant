@@ -5,6 +5,7 @@ import os
 import logging
 from typing import Dict, List, Any, Optional
 from openquant.broker.abstract import Broker
+from openquant.risk.trade_validator import TRADE_VALIDATOR
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +95,9 @@ class MT5Broker(Broker):
         side: 'buy' or 'sell'
         order_type: 'market', 'limit'
         quantity: volume in lots
+        
+        SAFETY: Validates trade through comprehensive risk checks before executing.
+        If any check fails, raises RuntimeError with detailed reason.
         """
         mt5_symbol = mt5_bridge.map_symbol(symbol)
         
@@ -118,6 +122,55 @@ class MT5Broker(Broker):
             
         arrival_price = float(tick.ask if side.lower() == "buy" else tick.bid)
         
+        # COMPREHENSIVE RISK VALIDATION
+        try:
+            equity = self.get_equity()
+            positions_dict = self.get_positions()
+            
+            # Convert positions to notional values
+            current_positions = {}
+            for pos_symbol, pos_qty in positions_dict.items():
+                # Get approximate notional value
+                # For forex, we need contract size and price
+                pos_tick = self.mt5.symbol_info_tick(pos_symbol)
+                if pos_tick:
+                    pos_price = float(pos_tick.ask if pos_qty > 0 else pos_tick.bid)
+                    pos_info = self.mt5.symbol_info(pos_symbol)
+                    contract_size = float(getattr(pos_info, "trade_contract_size", 100000.0))
+                    current_positions[pos_symbol] = abs(pos_qty) * contract_size * pos_price
+                else:
+                    current_positions[pos_symbol] = abs(pos_qty) * 100000.0  # Fallback
+            
+            # Calculate notional value for this trade
+            contract_size = float(getattr(info, "trade_contract_size", 100000.0))
+            validation_price = limit_price if limit_price else arrival_price
+            
+            result = TRADE_VALIDATOR.validate_trade(
+                symbol=mt5_symbol,
+                quantity=abs(volume),
+                price=validation_price * contract_size,  # Notional per lot
+                side=side,
+                portfolio_value=equity,
+                current_positions=current_positions,
+                current_equity=equity,
+                asset_class="forex" if "/" in symbol else None,
+            )
+            
+            if not result.allowed:
+                raise RuntimeError(f"Trade validation failed: {result.reason}")
+            
+            # Log warnings if any
+            for warning in result.warnings:
+                from openquant.utils.logging import get_logger
+                logger = get_logger(__name__)
+                logger.warning(f"Trade warning for {mt5_symbol}: {warning}")
+                
+        except Exception as e:
+            if "Trade validation failed" in str(e):
+                raise
+            raise RuntimeError(f"Pre-trade validation error: {str(e)}")
+        
+        # Build request
         request = {
             "action": self.mt5.TRADE_ACTION_DEAL,
             "symbol": mt5_symbol,

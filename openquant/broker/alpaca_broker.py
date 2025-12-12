@@ -4,8 +4,7 @@ Alpaca Broker Implementation.
 import os
 from typing import Dict, List, Any, Optional
 from openquant.broker.abstract import Broker
-from openquant.risk.kill_switch import KILL_SWITCH
-from openquant.risk.circuit_breaker import CIRCUIT_BREAKER
+from openquant.risk.trade_validator import TRADE_VALIDATOR
 
 try:
     from alpaca.trading.client import TradingClient
@@ -101,6 +100,43 @@ class AlpacaBroker(Broker):
             )
             arrival_price = limit_price # For limit orders, decision price is limit
         else:
+            raise ValueError(f"Unsupported order type: {order_type}")
+            
+        order = self.client.submit_order(order_data=req)
+        
+        # Log to TCA
+        # If market order, we might not have arrival price yet. 
+        # Ideally, the strategy passes the price it saw.
+        self.tca.log_order(
+            order_id=str(order.id),
+            symbol=symbol,
+            side=side,
+            quantity=quantity,
+            arrival_price=arrival_price
+        )
+        
+        return {"id": str(order.id), "status": order.status}
+
+    def close_all_positions(self):
+        self.client.close_all_positions(cancel_orders=True)
+
+    def sync_tca(self):
+        """Check for filled orders and update TCA records."""
+        try:
+            # Get closed orders from today
+            # In a real high-volume system, we'd filter by time or ID
+            orders = self.client.get_orders(filter=GetOrdersRequest(status="closed", limit=50))
+            for o in orders:
+                if o.status == "filled":
+                    self.tca.update_fill(
+                        order_id=str(o.id),
+                        fill_price=float(o.filled_avg_price) if o.filled_avg_price else 0.0,
+                        fill_qty=float(o.filled_qty),
+                        fee=0.0 # Alpaca paper has 0 fees usually, but we could calc estimated
+                    )
+        except Exception as e:
+            print(f"TCA Sync Error: {e}")
+
             raise ValueError(f"Unsupported order type: {order_type}")
             
         order = self.client.submit_order(order_data=req)
