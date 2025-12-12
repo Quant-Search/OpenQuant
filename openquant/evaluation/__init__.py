@@ -1,6 +1,11 @@
 """Evaluation module for strategy testing and validation."""
 
-from .wfo import walk_forward_evaluate, WFOSpec
+from .wfo import (
+    walk_forward_evaluate,
+    WFOSpec,
+    walk_forward_evaluate_regime_specific,
+    compare_strategies_by_regime,
+)
 from .monte_carlo import (
     run_comprehensive_mc,
     run_path_dependent_mc,
@@ -20,6 +25,8 @@ from .purged_kfold import purged_kfold_indices
 __all__ = [
     "walk_forward_evaluate",
     "WFOSpec",
+    "walk_forward_evaluate_regime_specific",
+    "compare_strategies_by_regime",
     "run_comprehensive_mc",
     "run_path_dependent_mc",
     "run_parameter_perturbation_mc",
