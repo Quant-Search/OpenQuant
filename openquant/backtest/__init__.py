@@ -23,6 +23,8 @@ from .cost_models import (
     TOD_MULTIPLIERS_FLAT,
 )
 
+from .cost_model import SpreadSchedule, MarketImpactModel, TickRounder, TransactionCostModel
+
 __all__ = [
     "BacktestResult",
     "backtest_signals",
@@ -41,4 +43,8 @@ __all__ = [
     "TOD_MULTIPLIERS_CRYPTO_MAJOR",
     "TOD_MULTIPLIERS_CRYPTO_ALTCOIN",
     "TOD_MULTIPLIERS_FLAT",
+    "SpreadSchedule",
+    "MarketImpactModel",
+    "TickRounder",
+    "TransactionCostModel",
 ]

@@ -6,6 +6,7 @@ import pandas as pd
 import numpy as np
 
 from ..utils.logging import get_logger
+from .cost_model import SpreadSchedule, MarketImpactModel, TickRounder, TransactionCostModel
 
 LOGGER = get_logger(__name__)
 
@@ -295,6 +296,10 @@ def backtest_signals(
     funding_rate_bps: float = 1.0,
     index_prices: Optional[pd.Series] = None,
     premium_sensitivity: float = 0.1,
+    spread_schedule: Optional[SpreadSchedule] = None,
+    impact_model: Optional[MarketImpactModel] = None,
+    tick_rounder: Optional[TickRounder] = None,
+    use_enhanced_costs: bool = False,
 ) -> BacktestResult:
     """Backtest long/flat signals on Close prices with fees in basis points per trade.
     Args:
@@ -325,6 +330,10 @@ def backtest_signals(
         funding_rate_bps: Base funding rate in bps for perpetual swaps.
         index_prices: Spot/index prices for dynamic funding calculation.
         premium_sensitivity: Sensitivity of funding rate to premium.
+        spread_schedule: SpreadSchedule for time-of-day spread adjustments.
+        impact_model: MarketImpactModel for volume-dependent slippage.
+        tick_rounder: TickRounder for tick size constraints.
+        use_enhanced_costs: Enable enhanced cost modeling (spread_schedule, impact_model, tick_rounder).
     Returns:
         BacktestResult with returns and equity curve (starting at 1.0).
     """
@@ -404,25 +413,68 @@ def backtest_signals(
 
     pos_change = pos.diff().abs().fillna(pos.abs())
     
-    # Fee cost (always applied)
-    fee = pos_change * w * lev * (fee_bps / 10000.0)
-    
-    # Enhanced Spread Cost with Time-of-Day modeling
-    if use_tod_spread and isinstance(px.index, pd.DatetimeIndex):
-        spread_bps_series = calculate_tod_spread(px.index, spread_bps, tod_multipliers)
-        spread_cost = pos_change * w * lev * (spread_bps_series / 10000.0)
+    # Enhanced cost modeling
+    if use_enhanced_costs:
+        # Initialize cost models if not provided
+        if spread_schedule is None:
+            spread_schedule = SpreadSchedule(base_spread_bps=spread_bps)
+        if impact_model is None:
+            impact_model = MarketImpactModel(impact_coeff=max(impact_coeff, 0.1))
+        if tick_rounder is None:
+            tick_rounder = TickRounder(tick_size=0.01)
+        
+        # Time-of-day spread adjustment
+        if hasattr(px.index, 'hour'):
+            dynamic_spread_bps = spread_schedule.get_spread_series(px.index)
+        else:
+            LOGGER.warning("Index has no time component, using base spread")
+            dynamic_spread_bps = spread_bps
+        
+        # Volume-dependent market impact
+        if "Volume" in df.columns:
+            # Calculate notional order sizes
+            order_notional = pos_change * w * lev * px
+            impact_slippage_bps = impact_model.calculate_impact_series(
+                df=df,
+                order_sizes=order_notional
+            )
+        else:
+            LOGGER.warning("No Volume column, using legacy impact model")
+            vol = ret.rolling(20).std().fillna(0.0)
+            impact_slippage_bps = impact_coeff * vol * 10000.0 if impact_coeff > 0 else 0.0
+        
+        # Apply tick constraints to prices (simulation of realistic fills)
+        if tick_rounder is not None:
+            px_rounded = tick_rounder.round_series(px)
+            # Adjust returns based on rounded prices
+            ret_rounded = px_rounded.pct_change(fill_method=None).fillna(0.0)
+            # Use rounded returns for P&L calculation
+            ret = ret_rounded
+        
+        # Calculate total costs
+        fee = pos_change * w * lev * (fee_bps / 10000.0)
+        spread_cost = pos_change * w * lev * (dynamic_spread_bps / 10000.0)
+        slippage_cost = pos_change * w * lev * (impact_slippage_bps / 10000.0)
     else:
-        spread_cost = pos_change * w * lev * (spread_bps / 10000.0) if spread_bps > 0 else 0.0
-    
-    # Enhanced Slippage Cost with Volume dependency
-    if use_volume_slippage and "Volume" in df.columns:
-        volumes = df["Volume"].astype(float)
-        slippage_bps_series = calculate_volume_slippage(
-            volumes, pos_change, slippage_bps, volume_impact_coeff
-        )
-        slippage_cost = pos_change * w * lev * (slippage_bps_series / 10000.0)
-    else:
-        slippage_cost = pos_change * w * lev * (slippage_bps / 10000.0) if slippage_bps > 0 else 0.0
+        # Fee cost (always applied)
+        fee = pos_change * w * lev * (fee_bps / 10000.0)
+        
+        # Enhanced Spread Cost with Time-of-Day modeling
+        if use_tod_spread and isinstance(px.index, pd.DatetimeIndex):
+            spread_bps_series = calculate_tod_spread(px.index, spread_bps, tod_multipliers)
+            spread_cost = pos_change * w * lev * (spread_bps_series / 10000.0)
+        else:
+            spread_cost = pos_change * w * lev * (spread_bps / 10000.0) if spread_bps > 0 else 0.0
+        
+        # Enhanced Slippage Cost with Volume dependency
+        if use_volume_slippage and "Volume" in df.columns:
+            volumes = df["Volume"].astype(float)
+            slippage_bps_series = calculate_volume_slippage(
+                volumes, pos_change, slippage_bps, volume_impact_coeff
+            )
+            slippage_cost = pos_change * w * lev * (slippage_bps_series / 10000.0)
+        else:
+            slippage_cost = pos_change * w * lev * (slippage_bps / 10000.0) if slippage_bps > 0 else 0.0
 
     # Swap Cost Calculation (Overnight holding)
     # Identify days where position was held overnight (23:59 -> 00:00)
@@ -485,7 +537,7 @@ def backtest_signals(
             px, pos_change, volumes, w, lev, participation_rate, impact_exponent
         )
         impact_cost = pos_change * w * lev * (impact_bps_series / 10000.0)
-    elif impact_coeff > 0.0:
+    elif not use_enhanced_costs and impact_coeff > 0.0:
         # Legacy simple market impact model
         vol = ret.rolling(20).std().fillna(0.0)
         impact_cost = pos_change * w * lev * impact_coeff * vol
@@ -618,4 +670,3 @@ def auto_backtest(
                 "Fallback sur CPU backtest."
             )
         return backtest_signals(df=df, signals=signals, **kwargs)
-
