@@ -1,50 +1,86 @@
-# Setup Status
+# OpenQuant Setup Status
 
-## Completed Steps
+## Completed Setup Steps
 
-1. ✅ **Virtual Environment Created**: `.venv` directory has been created with Python 3.14
-2. ✅ **Environment File Created**: `.env` file has been copied from `.env.example`
-3. ✅ **Installation Scripts Created**: 
-   - `install.bat` - Batch script to install dependencies on Windows
-   - `install_deps.py` - Python script to install dependencies
+### 1. Virtual Environment
+✅ Created Python virtual environment at `.venv/`
+- Python version: 3.14.0
+- Note: Target version per pyproject.toml is 3.11, but 3.14 was used
 
-## Remaining Steps
+### 2. Environment Configuration
+✅ Created `.env` file from `.env.example`
+- File is properly gitignored
+- Ready for credentials configuration
 
-### Install Python Dependencies
+### 3. Package Installation
 
-Due to system security restrictions, package installation needs to be completed manually. Run ONE of the following:
+#### Successfully Installed Packages:
+✅ **Core packages:**
+- pandas (2.3.3)
+- numpy (2.3.5)
+- pyyaml (6.0.3)
+- python-dotenv (1.2.1)
+- pytest (9.0.2)
 
-**Option 1: Using the batch script (Recommended for Windows)**
-```cmd
-install.bat
-```
+✅ **Data & Market packages:**
+- yfinance (0.2.66)
+- ccxt (4.5.27)
+- duckdb (1.4.3)
 
-**Option 2: Using the Python script**
-```cmd
-.venv\Scripts\python.exe install_deps.py
-```
+✅ **Visualization:**
+- matplotlib (3.10.8)
+- plotly (6.5.0)
 
-**Option 3: Manual installation**
-```cmd
-.venv\Scripts\python.exe -m pip install -r requirements.txt
-```
+✅ **Analysis & Statistics:**
+- scipy (1.16.3)
+- scikit-learn (1.8.0)
+- statsmodels (installed)
+- psutil (7.1.3)
 
-### Important Notes
+✅ **Build Tools:**
+- pyinstaller (6.17.0)
 
-1. **pandas_ta Compatibility Issue**: The package `pandas_ta` requires `numba==0.61.2` which is incompatible with Python 3.14. The installation scripts skip this package. If you need `pandas_ta`, consider using Python 3.13 or earlier.
+#### Packages NOT Installed (Compatibility Issues):
+❌ **streamlit** - Required for dashboard (python3 scripts/run_dashboard.py)
+❌ **optuna** - Required for optimization
+❌ **arch** - Required for GARCH models
+❌ **filterpy** - Required for Kalman filter
+❌ **hurst** - Required for Hurst exponent calculation
+❌ **alpaca-py** - Required for Alpaca broker integration
+❌ **pandas_ta** - Requires numba which doesn't support Python 3.14
 
-2. **Python Version**: Currently using Python 3.14. The project specifies Python 3.10+ compatibility, but some dependencies may not fully support 3.14 yet.
+## Current Limitations
 
-3. **After Installation**: Once packages are installed, you should be able to run:
-   - Tests: `pytest tests/`
-   - Dev Server: `python scripts/run_dashboard.py`
-   - Paper Trading: `run_robot.bat` (Windows) or `./run_paper.sh` (Linux)
+### Python 3.14 Compatibility
+The system was set up with Python 3.14.0, but several packages have compatibility issues:
+- `pandas_ta` requires `numba==0.61.2` which only supports Python 3.10-3.13
+- Some packages timed out during installation
 
-4. **Environment Configuration**: Edit `.env` file with your actual credentials before running the application.
+### Recommended Actions
+1. **To use ALL features**: Consider using Python 3.11 or 3.12 instead of 3.14
+2. **To install remaining packages manually**:
+   ```powershell
+   .venv\Scripts\python -m pip install streamlit optuna arch filterpy hurst alpaca-py
+   ```
 
-## Verification
+## What Works Now
+✅ Core statistical analysis (ADF, KPSS, cointegration)
+✅ Data fetching (yfinance, ccxt)
+✅ Basic visualization (matplotlib, plotly)
+✅ Testing framework (pytest)
+✅ Machine learning (scikit-learn)
+✅ Paper trading and basic strategies
 
-After running the installation, verify the setup with:
-```cmd
-.venv\Scripts\python.exe -c "import pandas, numpy, pytest; print('Core dependencies installed successfully')"
-```
+## What Requires Additional Setup
+⚠️ Streamlit dashboard
+⚠️ Kalman filter-based strategies
+⚠️ GARCH volatility modeling
+⚠️ Hurst exponent calculations
+⚠️ Hyperparameter optimization (Optuna)
+⚠️ Alpaca live trading
+
+## Next Steps
+1. Configure credentials in `.env` file
+2. Install remaining packages (if needed for your use case)
+3. Run tests: `pytest tests/`
+4. For full dashboard support, consider reinstalling with Python 3.11/3.12

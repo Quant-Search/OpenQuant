@@ -34,10 +34,34 @@ def optuna_best_params(
     weight: float,
     timeframe: str,
     n_trials: int = 20,  # Reduced from 50 for speed
+    symbol: str = "unknown",
+    use_cache: bool = True,
 ) -> Dict[str, Any]:
     """Run an Optuna study to pick best params from the (categorical) grid.
-    Returns best parameter dict.
+    Returns best parameter dict with optional caching.
+    
+    Args:
+        strat_name: Strategy name
+        df: OHLCV DataFrame
+        grid: Parameter grid
+        fee_bps: Fee in basis points
+        weight: Position weight
+        timeframe: Data timeframe
+        n_trials: Number of optimization trials
+        symbol: Symbol identifier for caching
+        use_cache: Whether to use cache
     """
+    cache = get_cache() if use_cache else None
+    
+    # Try cache first
+    if cache:
+        cached = cache.get_optimization(
+            strat_name, symbol, timeframe,
+            fee_bps=fee_bps, weight=weight, n_trials=n_trials, grid_hash=str(hash(str(grid)))
+        )
+        if cached is not None:
+            return cached
+    
     keys, vals = _grid_keys_values(grid)
     freq = _freq_from_timeframe(timeframe)
 

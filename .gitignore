@@ -58,6 +58,12 @@ pytest_*.txt
 
 # Local data cache (parquet/csv)
 data_cache/
+*.parquet
+*.csv
+cache.db
+cache.db-journal
+cache.db-shm
+cache.db-wal
 
 # DuckDB database files (TCA, execution quality, results)
 *.duckdb

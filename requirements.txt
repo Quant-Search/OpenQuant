@@ -23,3 +23,4 @@ alpaca-py
 scikit-learn
 numba
 dask[dataframe]
+redis

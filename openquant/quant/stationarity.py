@@ -90,10 +90,31 @@ def hurst_exponent(series: pd.Series | np.ndarray, max_lag: int = 100) -> float:
     except Exception:
         return 0.5
 
-def classify_regime(series: pd.Series, config=None) -> Dict[str, Any]:
+def classify_regime(series: pd.Series, symbol: str = "unknown", timeframe: str = "1d", use_cache: bool = True, config=None) -> Dict[str, Any]:
     """
-    Run battery of tests to classify regime.
+    Run battery of tests to classify regime with optional caching.
+    
+    Args:
+        series: Price or returns series
+        symbol: Symbol identifier for caching
+        timeframe: Timeframe for caching
+        use_cache: Whether to use cache
+        config: Configuration object (optional)
     """
+    # Get cache if enabled
+    if use_cache:
+        from openquant.data import get_cache
+        cache = get_cache()
+        
+        # Try cache first
+        if cache:
+            cached = cache.get_indicator("regime_classification", symbol, timeframe, max_lag=100)
+            if cached is not None:
+                return cached
+    else:
+        cache = None
+    
+    # Get config if not provided
     if config is None:
         from openquant.config.manager import get_config
         config = get_config()
@@ -124,10 +145,16 @@ def classify_regime(series: pd.Series, config=None) -> Dict[str, Any]:
     # ADF checks for unit root (random walk). If p < 0.05, it's NOT a random walk.
     # Usually stationary implies H < 0.5.
     
-    return {
+    result = {
         "regime": regime,
         "hurst": float(h),
         "adf_p": adf.get("p_value"),
         "is_stationary": adf.get("is_stationary"),
         "kpss_stationary": kpss_res.get("is_stationary")
     }
+    
+    # Cache result
+    if cache:
+        cache.set_indicator(result, "regime_classification", symbol, timeframe, max_lag=100)
+    
+    return result

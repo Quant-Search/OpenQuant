@@ -1,4 +1,11 @@
 """Data module for OpenQuant."""
+from .loader import DataLoader
+from .cache import (
+    DataCache,
+    CacheConfig,
+    get_cache,
+    invalidate_cache,
+)
 from .orderbook import (
     OrderBookLevel,
     OrderBookSnapshot,
@@ -17,10 +24,15 @@ from .orderbook_helpers import (
     adjust_quantity_for_liquidity,
     get_market_conditions,
     validate_order_feasibility,
-    clear_cache
+    clear_cache as clear_orderbook_cache
 )
 
 __all__ = [
+    "DataLoader",
+    "DataCache", 
+    "CacheConfig",
+    "get_cache",
+    "invalidate_cache",
     "OrderBookLevel",
     "OrderBookSnapshot", 
     "OrderBookFetcher",
@@ -35,5 +47,5 @@ __all__ = [
     "adjust_quantity_for_liquidity",
     "get_market_conditions",
     "validate_order_feasibility",
-    "clear_cache"
+    "clear_orderbook_cache"
 ]
