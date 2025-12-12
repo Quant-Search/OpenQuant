@@ -242,3 +242,9 @@ data/signals.csv
 reports/run_summary_*.md
 reports/universe_summary_*.md
 reports/allocation_*.json
+
+# Database backups
+data/backups/
+*.duckdb.bak.*
+backup_*.tar.gz
+data/backup.log
