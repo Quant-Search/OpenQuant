@@ -9,12 +9,19 @@ Later we can add: next-bar-open fills, slippage, fees, partial fills.
 from typing import Dict, List, Tuple, Iterable, Optional
 from dataclasses import dataclass, field
 import numpy as np
+import pandas as pd
 
 from .state import PortfolioState, Key
 from ..risk.kill_switch import KILL_SWITCH
 from ..risk.circuit_breaker import CIRCUIT_BREAKER
 from ..risk.kelly_criterion import KellyCriterion, compute_rolling_volatility
 from ..risk.trade_validator import TRADE_VALIDATOR
+from ..risk.adaptive_sizing import AdaptiveSizer
+from ..quant.regime_detector import RegimeDetector, RegimeType
+from ..reporting.performance_tracker import PerformanceTracker
+from ..utils.logging import get_logger
+
+LOGGER = get_logger(__name__)
 
 
 @dataclass
@@ -22,6 +29,388 @@ class MarketSnapshot:
     prices: Dict[Key, float]  # last trade price per key (quote currency units)
     next_prices: Dict[Key, float] = field(default_factory=dict)  # next-bar prices for fills (optional)
     price_history: Dict[Key, np.ndarray] = field(default_factory=dict)  # historical prices for volatility calculation
+
+
+class PortfolioOptimizer:
+    """Portfolio optimizer for optimal allocation using mean-variance optimization."""
+    
+    def __init__(self, method: str = "sharpe", risk_free_rate: float = 0.0):
+        """
+        Args:
+            method: Optimization method ('sharpe', 'min_variance', 'max_return')
+            risk_free_rate: Risk-free rate for Sharpe calculation
+        """
+        self.method = method
+        self.risk_free_rate = risk_free_rate
+        
+    def optimize_allocation(
+        self, 
+        returns: pd.DataFrame,
+        constraints: Optional[Dict] = None
+    ) -> Dict[str, float]:
+        """
+        Calculate optimal portfolio weights.
+        
+        Args:
+            returns: DataFrame with returns for each asset (columns are assets)
+            constraints: Optional constraints dict with 'min_weight', 'max_weight', 'max_assets'
+            
+        Returns:
+            Dictionary mapping asset keys to optimal weights
+        """
+        try:
+            from scipy.optimize import minimize
+        except ImportError:
+            LOGGER.warning("scipy not installed, using equal weights")
+            n = len(returns.columns)
+            return {str(col): 1.0 / n for col in returns.columns}
+            
+        if returns.empty or len(returns.columns) == 0:
+            return {}
+            
+        # Calculate expected returns and covariance
+        mean_returns = returns.mean()
+        cov_matrix = returns.cov()
+        
+        n_assets = len(returns.columns)
+        
+        # Set default constraints
+        if constraints is None:
+            constraints = {}
+        min_weight = constraints.get('min_weight', 0.0)
+        max_weight = constraints.get('max_weight', 0.5)
+        
+        def portfolio_stats(weights):
+            portfolio_return = np.dot(weights, mean_returns)
+            portfolio_std = np.sqrt(np.dot(weights, np.dot(cov_matrix, weights)))
+            return portfolio_return, portfolio_std
+            
+        def neg_sharpe(weights):
+            p_ret, p_std = portfolio_stats(weights)
+            if p_std == 0:
+                return 0.0
+            return -(p_ret - self.risk_free_rate) / p_std
+            
+        def portfolio_variance(weights):
+            return np.dot(weights, np.dot(cov_matrix, weights))
+            
+        # Objective function
+        if self.method == "sharpe":
+            objective = neg_sharpe
+        elif self.method == "min_variance":
+            objective = portfolio_variance
+        else:  # max_return
+            objective = lambda w: -np.dot(w, mean_returns)
+            
+        # Constraints: weights sum to 1
+        cons = ({'type': 'eq', 'fun': lambda x: np.sum(x) - 1})
+        
+        # Bounds: min_weight <= weight <= max_weight
+        bounds = tuple((min_weight, max_weight) for _ in range(n_assets))
+        
+        # Initial guess: equal weights
+        x0 = np.array([1.0 / n_assets] * n_assets)
+        
+        try:
+            result = minimize(
+                objective, 
+                x0, 
+                method='SLSQP', 
+                bounds=bounds, 
+                constraints=cons,
+                options={'maxiter': 1000}
+            )
+            
+            if result.success:
+                weights = result.x
+                # Map back to asset keys
+                allocation = {}
+                for i, col in enumerate(returns.columns):
+                    if weights[i] > 1e-6:  # Filter out tiny weights
+                        allocation[str(col)] = float(weights[i])
+                return allocation
+            else:
+                LOGGER.warning(f"Optimization failed: {result.message}, using equal weights")
+                return {str(col): 1.0 / n_assets for col in returns.columns}
+        except Exception as e:
+            LOGGER.error(f"Optimization error: {e}, using equal weights")
+            return {str(col): 1.0 / n_assets for col in returns.columns}
+
+
+class EnhancedSimulator:
+    """
+    Enhanced paper trading simulator with integrated:
+    - Portfolio optimizer for allocation calculation
+    - Adaptive sizer for position sizing
+    - Regime detector for exposure adjustment
+    - Performance tracker for degradation alerts
+    """
+    
+    def __init__(
+        self,
+        optimizer_method: str = "sharpe",
+        sizer_method: str = "volatility",
+        regime_lookback: int = 100,
+        performance_path: Optional[str] = None
+    ):
+        """
+        Args:
+            optimizer_method: Portfolio optimization method ('sharpe', 'min_variance', 'max_return')
+            sizer_method: Adaptive sizing method ('volatility', 'kelly')
+            regime_lookback: Lookback period for regime detection
+            performance_path: Path for performance tracker storage
+        """
+        self.portfolio_optimizer = PortfolioOptimizer(method=optimizer_method)
+        self.adaptive_sizer = AdaptiveSizer(method=sizer_method)
+        self.regime_detector = RegimeDetector(lookback=regime_lookback)
+        
+        if performance_path:
+            from pathlib import Path
+            self.performance_tracker = PerformanceTracker(data_path=Path(performance_path))
+        else:
+            self.performance_tracker = PerformanceTracker()
+            
+        self._trading_halted = False
+        self._halt_reason = ""
+        
+    def check_profitability_constraints(
+        self,
+        lookback_days: int = 30,
+        min_sharpe: float = 1.0,
+        max_drawdown: float = 0.20
+    ) -> Tuple[bool, str]:
+        """
+        Check if trading should be halted due to poor performance.
+        
+        Halts trading if:
+        - Rolling Sharpe ratio drops below min_sharpe (default 1.0)
+        - Current drawdown exceeds max_drawdown (default 20%)
+        
+        Args:
+            lookback_days: Period for rolling metrics calculation
+            min_sharpe: Minimum acceptable Sharpe ratio
+            max_drawdown: Maximum acceptable drawdown (as decimal, e.g., 0.20 = 20%)
+            
+        Returns:
+            Tuple of (should_halt, reason)
+        """
+        stats = self.performance_tracker.get_stats(lookback_days=lookback_days)
+        
+        # Check Sharpe ratio
+        sharpe = stats.get('sharpe_estimate', 0.0)
+        if sharpe < min_sharpe:
+            reason = f"Rolling Sharpe ({sharpe:.2f}) below minimum ({min_sharpe:.2f})"
+            LOGGER.warning(f"PROFITABILITY CONSTRAINT VIOLATED: {reason}")
+            return True, reason
+            
+        # Check drawdown
+        current_dd = stats.get('current_drawdown', 0.0)
+        if current_dd > max_drawdown:
+            reason = f"Current drawdown ({current_dd:.2%}) exceeds maximum ({max_drawdown:.2%})"
+            LOGGER.warning(f"PROFITABILITY CONSTRAINT VIOLATED: {reason}")
+            return True, reason
+            
+        return False, ""
+        
+    def halt_trading(self, reason: str):
+        """Halt all trading operations."""
+        self._trading_halted = True
+        self._halt_reason = reason
+        LOGGER.critical(f"TRADING HALTED: {reason}")
+        
+    def resume_trading(self):
+        """Resume trading operations."""
+        self._trading_halted = False
+        self._halt_reason = ""
+        LOGGER.info("Trading resumed")
+        
+    def is_trading_halted(self) -> Tuple[bool, str]:
+        """Check if trading is currently halted."""
+        return self._trading_halted, self._halt_reason
+        
+    def compute_optimized_allocation(
+        self,
+        historical_prices: Dict[Key, pd.Series],
+        base_targets: Optional[List[Tuple[Key, float]]] = None,
+        regime_data: Optional[pd.DataFrame] = None
+    ) -> List[Tuple[Key, float]]:
+        """
+        Compute optimized portfolio allocation with regime adjustment.
+        
+        Args:
+            historical_prices: Dict mapping keys to price Series for optimization
+            base_targets: Optional base target weights to adjust
+            regime_data: Optional DataFrame for regime detection
+            
+        Returns:
+            List of (key, weight) tuples with optimized allocations
+        """
+        if not historical_prices:
+            return base_targets or []
+            
+        # Calculate returns for each asset
+        returns_dict = {}
+        for key, prices in historical_prices.items():
+            if len(prices) > 1:
+                returns_dict[str(key)] = prices.pct_change().dropna()
+                
+        if not returns_dict:
+            return base_targets or []
+            
+        # Align all returns to common index
+        returns_df = pd.DataFrame(returns_dict)
+        returns_df = returns_df.dropna()
+        
+        if returns_df.empty:
+            return base_targets or []
+            
+        # Optimize allocation
+        optimized_weights = self.portfolio_optimizer.optimize_allocation(returns_df)
+        
+        # Apply regime adjustment if regime data provided
+        regime_multiplier = 1.0
+        if regime_data is not None and not regime_data.empty:
+            try:
+                regime_info = self.regime_detector.detect_regime(regime_data)
+                
+                # Adjust exposure based on regime
+                trend_regime = regime_info.get('trend_regime')
+                vol_regime = regime_info.get('volatility_regime')
+                
+                # Reduce exposure in high volatility or ranging markets
+                if vol_regime == RegimeType.HIGH_VOLATILITY:
+                    regime_multiplier *= 0.6
+                    LOGGER.info("High volatility regime detected, reducing exposure by 40%")
+                    
+                if trend_regime == RegimeType.RANGING:
+                    regime_multiplier *= 0.7
+                    LOGGER.info("Ranging market detected, reducing exposure by 30%")
+                    
+                # Store regime info for logging
+                LOGGER.info(f"Regime: {trend_regime.value if hasattr(trend_regime, 'value') else trend_regime}, "
+                          f"Hurst: {regime_info.get('hurst_exponent', 0):.2f}, "
+                          f"Vol: {regime_info.get('volatility', 0):.4f}")
+            except Exception as e:
+                LOGGER.error(f"Regime detection failed: {e}")
+                
+        # Convert to list of tuples and apply regime multiplier
+        allocation = []
+        for key_str, weight in optimized_weights.items():
+            try:
+                # Parse key string back to tuple if needed
+                key = eval(key_str) if isinstance(key_str, str) and key_str.startswith('(') else key_str
+                adjusted_weight = weight * regime_multiplier
+                if adjusted_weight > 1e-6:
+                    allocation.append((key, adjusted_weight))
+            except Exception as e:
+                LOGGER.warning(f"Failed to parse key {key_str}: {e}")
+                
+        return allocation
+        
+    def apply_adaptive_sizing(
+        self,
+        targets: List[Tuple[Key, float]],
+        volatility: Optional[float] = None,
+        current_equity: Optional[float] = None
+    ) -> List[Tuple[Key, float]]:
+        """
+        Apply adaptive position sizing to target allocations.
+        
+        Args:
+            targets: List of (key, weight) tuples
+            volatility: Current portfolio volatility estimate
+            current_equity: Current portfolio equity for tracking
+            
+        Returns:
+            List of (key, adjusted_weight) tuples
+        """
+        # Update sizer with current equity if provided
+        if current_equity is not None:
+            self.adaptive_sizer.current_equity = current_equity
+            
+        # Get sizing multiplier
+        size_multiplier = self.adaptive_sizer.get_size(volatility=volatility)
+        
+        LOGGER.info(f"Adaptive sizing multiplier: {size_multiplier:.2f}")
+        
+        # Apply sizing to all targets
+        adjusted_targets = []
+        for key, weight in targets:
+            adjusted_weight = weight * size_multiplier
+            if adjusted_weight > 1e-6:
+                adjusted_targets.append((key, adjusted_weight))
+                
+        # Log sizing stats
+        stats = self.adaptive_sizer.get_stats()
+        LOGGER.debug(f"Sizer stats: WinRate={stats['win_rate']:.2%}, "
+                    f"Expectancy={stats['expectancy']:.4f}, "
+                    f"DD={stats['current_drawdown']:.2%}")
+                    
+        return adjusted_targets
+        
+    def update_performance(
+        self,
+        state: PortfolioState,
+        snap: MarketSnapshot,
+        filled_orders: List[Tuple[Key, float, float, float]]
+    ):
+        """
+        Update performance tracker with latest equity and trade fills.
+        
+        Args:
+            state: Current portfolio state
+            snap: Market snapshot with current prices
+            filled_orders: List of (key, delta_units, exec_price, fee_paid) from execute_orders
+        """
+        # Calculate current equity
+        equity = state.cash
+        for k, u in state.holdings.items():
+            p = float(snap.prices.get(k, 0.0))
+            equity += float(u) * p
+            
+        # Update equity curve
+        if self.performance_tracker.initial_equity == 0:
+            self.performance_tracker.set_initial_equity(equity)
+        else:
+            self.performance_tracker.update_equity(equity)
+            
+        # Record closed trades (simplified - detect full position closes)
+        for key, delta_units, exec_price, fee_paid in filled_orders:
+            cur_units = state.position(key)
+            
+            # Check if this was a position close (went to zero or flipped)
+            old_units = cur_units - delta_units
+            
+            if (old_units != 0 and 
+                ((old_units > 0 and cur_units <= 0) or (old_units < 0 and cur_units >= 0))):
+                
+                # Calculate P&L for the closed portion
+                avg_price = state.avg_price.get(key, exec_price)
+                closed_units = abs(old_units) if abs(cur_units) < abs(old_units) else abs(old_units)
+                
+                if old_units > 0:
+                    # Closed long
+                    pnl = (exec_price - avg_price) * closed_units - fee_paid
+                    side = "LONG"
+                else:
+                    # Closed short
+                    pnl = (avg_price - exec_price) * closed_units - fee_paid
+                    side = "SHORT"
+                    
+                # Extract symbol from key
+                symbol = key[1] if isinstance(key, tuple) and len(key) > 1 else str(key)
+                
+                self.performance_tracker.record_trade(
+                    symbol=symbol,
+                    side=side,
+                    entry_price=avg_price,
+                    exit_price=exec_price,
+                    quantity=closed_units,
+                    strategy=key[3] if isinstance(key, tuple) and len(key) > 3 else "unknown"
+                )
+                
+                # Update adaptive sizer
+                self.adaptive_sizer.update(pnl, equity)
 
 
 def compute_target_units(state: PortfolioState, targets: List[Tuple[Key, float]], snap: MarketSnapshot) -> Dict[Key, float]:
