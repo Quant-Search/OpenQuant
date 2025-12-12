@@ -360,27 +360,19 @@ def validate_ohlcv(df: pd.DataFrame,
         issues.append("duplicate_index")
     if not df.index.is_monotonic_increasing:
         issues.append("non_monotonic_index")
-    # Non-negative values
     vals = df[["Open", "High", "Low", "Close", "Volume"]]
     if (vals < 0).any().any():
         issues.append("negative_values")
-    # OHLC relationships
     if ((df["High"] < df[["Open", "Close"]].max(axis=1))).any():
         issues.append("high_below_open_close")
     if ((df["Low"] > df[["Open", "Close"]].min(axis=1))).any():
         issues.append("low_above_open_close")
-    # NaNs excessive
     if vals.isna().mean().mean() > 0.1:
         issues.append("too_many_nans")
-    # Size
     if len(df) < 10:
         issues.append("too_few_rows")
-        
-    # Sanity Check: Volume
     if df['Volume'].mean() < 1.0:
         issues.append("low_volume_warning")
-    
-    # Spike Filter: Detect unrealistic price movements
     pct_change = df['Close'].pct_change().abs()
     if (pct_change > 0.5).any():
         issues.append("price_spike_detected")
@@ -493,3 +485,113 @@ def get_validation_report(df: pd.DataFrame) -> Dict[str, Any]:
         "volume_profile": volume_profile,
         "outliers": outlier_details
     }
+
+
+def detect_gaps(df: pd.DataFrame, threshold_multiplier: float = 3.0) -> np.ndarray:
+    """Detect gaps in price data (>3x median bar-to-bar change).
+    
+    Args:
+        df: DataFrame with OHLCV data
+        threshold_multiplier: Multiplier for median change (default 3.0)
+        
+    Returns:
+        Boolean array indicating gaps
+    """
+    if len(df) < 2:
+        return np.zeros(len(df), dtype=bool)
+    
+    close_changes = df['Close'].diff().abs()
+    median_change = close_changes.median()
+    
+    if median_change == 0 or np.isnan(median_change):
+        pct_changes = df['Close'].pct_change().abs()
+        median_pct_change = pct_changes.median()
+        if median_pct_change == 0 or np.isnan(median_pct_change):
+            return np.zeros(len(df), dtype=bool)
+        threshold = median_pct_change * threshold_multiplier
+        gaps = pct_changes > threshold
+    else:
+        threshold = median_change * threshold_multiplier
+        gaps = close_changes > threshold
+    
+    return gaps.fillna(False).values
+
+
+def detect_volume_anomalies(df: pd.DataFrame, window: int = 20, sigma_threshold: float = 5.0) -> np.ndarray:
+    """Detect volume anomalies (>5σ from rolling mean).
+    
+    Args:
+        df: DataFrame with OHLCV data
+        window: Rolling window size (default 20)
+        sigma_threshold: Sigma multiplier (default 5.0)
+        
+    Returns:
+        Boolean array indicating volume anomalies
+    """
+    if len(df) < window:
+        return np.zeros(len(df), dtype=bool)
+    
+    volume = df['Volume'].values
+    rolling_mean = pd.Series(volume).rolling(window=window, min_periods=1).mean()
+    rolling_std = pd.Series(volume).rolling(window=window, min_periods=1).std()
+    
+    rolling_std = rolling_std.fillna(0)
+    anomalies = np.abs(volume - rolling_mean.values) > (sigma_threshold * rolling_std.values)
+    
+    return anomalies
+
+
+def clean_ohlcv(df: pd.DataFrame, 
+                fill_method: str = "ffill",
+                remove_outliers: bool = True,
+                iqr_multiplier: float = 2.5) -> pd.DataFrame:
+    """Clean OHLCV data by filling gaps and removing outliers.
+    
+    Args:
+        df: DataFrame with OHLCV data
+        fill_method: Method to fill gaps ('ffill', 'bfill', 'interpolate')
+        remove_outliers: Whether to remove outliers (default True)
+        iqr_multiplier: IQR multiplier for outlier detection (default 2.5)
+        
+    Returns:
+        Cleaned DataFrame
+    """
+    if len(df) == 0:
+        return df.copy()
+    
+    cleaned = df.copy()
+    
+    req = {"Open", "High", "Low", "Close", "Volume"}
+    if not req.issubset(cleaned.columns):
+        return cleaned
+    
+    if remove_outliers and len(cleaned) >= 4:
+        price_cols = ["Open", "High", "Low", "Close"]
+        
+        for col in price_cols:
+            valid_data = cleaned[col].dropna().values
+            if len(valid_data) < 4:
+                continue
+            
+            outliers_iqr = detect_outliers_iqr(cleaned[col], multiplier=iqr_multiplier)
+            
+            if outliers_iqr.sum() > 0:
+                cleaned.loc[outliers_iqr, col] = np.nan
+        
+        volume_outliers = detect_outliers_iqr(cleaned['Volume'], multiplier=iqr_multiplier)
+        if volume_outliers.sum() > 0:
+            cleaned.loc[volume_outliers, 'Volume'] = np.nan
+    
+    if fill_method == "ffill":
+        cleaned[["Open", "High", "Low", "Close"]] = cleaned[["Open", "High", "Low", "Close"]].fillna(method='ffill')
+        cleaned["Volume"] = cleaned["Volume"].fillna(0)
+    elif fill_method == "bfill":
+        cleaned[["Open", "High", "Low", "Close"]] = cleaned[["Open", "High", "Low", "Close"]].fillna(method='bfill')
+        cleaned["Volume"] = cleaned["Volume"].fillna(0)
+    elif fill_method == "interpolate":
+        cleaned[["Open", "High", "Low", "Close"]] = cleaned[["Open", "High", "Low", "Close"]].interpolate(method='linear')
+        cleaned["Volume"] = cleaned["Volume"].fillna(0)
+    
+    cleaned = cleaned.dropna(subset=["Close"])
+    
+    return cleaned
