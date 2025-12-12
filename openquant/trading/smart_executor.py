@@ -5,6 +5,7 @@ Optimized order execution with:
 - TWAP (Time-Weighted Average Price)
 - Slippage reduction
 - Order retry logic
+- Order book depth integration for execution optimization
 """
 import time
 from typing import Optional, Dict, Any, Tuple
@@ -14,6 +15,7 @@ from datetime import datetime
 import threading
 
 from ..utils.logging import get_logger
+from ..data.orderbook import OrderBookAnalyzer, OrderBookSnapshot
 
 LOGGER = get_logger(__name__)
 
@@ -52,6 +54,8 @@ class ExecutionConfig:
     timeout_seconds: float = 30.0
     twap_slices: int = 5
     twap_interval_seconds: float = 60.0
+    use_orderbook: bool = False  # Enable order book integration
+    orderbook_exchange: Optional[str] = None  # Exchange for order book (e.g., "binance")
 
 class SmartExecutor:
     """
@@ -62,6 +66,7 @@ class SmartExecutor:
     - Automatic retry on partial fills
     - TWAP for large orders
     - Slippage tracking
+    - Order book depth integration for optimal pricing
     """
     
     def __init__(
@@ -72,6 +77,16 @@ class SmartExecutor:
         self.broker = broker
         self.config = config or ExecutionConfig()
         self._orders: Dict[str, Dict] = {}
+        
+        # Initialize order book analyzer if enabled
+        self.orderbook_analyzer: Optional[OrderBookAnalyzer] = None
+        if self.config.use_orderbook and self.config.orderbook_exchange:
+            try:
+                self.orderbook_analyzer = OrderBookAnalyzer(self.config.orderbook_exchange)
+                LOGGER.info(f"Order book integration enabled for {self.config.orderbook_exchange}")
+            except Exception as e:
+                LOGGER.warning(f"Failed to initialize order book analyzer: {e}")
+                self.orderbook_analyzer = None
         
     def execute(
         self,
@@ -95,14 +110,58 @@ class SmartExecutor:
         """
         start_time = time.time()
         
+        # Use order book for enhanced execution if available
+        adjusted_quantity = quantity
         order_type = kwargs.get("order_type", self.config.order_type)
         
+        if self.orderbook_analyzer:
+            try:
+                # Analyze execution with order book
+                analysis = self.orderbook_analyzer.analyze_execution(
+                    symbol=symbol,
+                    quantity=quantity,
+                    side=side.lower(),
+                    urgency=kwargs.get("urgency", 0.5)
+                )
+                
+                # Adjust quantity based on liquidity
+                if not analysis["feasible"]:
+                    LOGGER.warning(
+                        f"Order book analysis: {analysis['sizing']['reason']}. "
+                        f"Adjusting from {quantity} to {analysis['recommended_quantity']}"
+                    )
+                    adjusted_quantity = analysis["recommended_quantity"]
+                
+                # Override current_price with optimal price if available
+                if analysis.get("optimal_price") and analysis["optimal_price"] > 0:
+                    current_price = analysis["optimal_price"]
+                    LOGGER.info(
+                        f"Using order book optimal price: {current_price:.5f} "
+                        f"(spread: {analysis['spread_bps']:.2f}bps, "
+                        f"impact: {analysis['market_impact_bps']:.2f}bps)"
+                    )
+                
+                # Auto-select order type based on conditions
+                if order_type == self.config.order_type:  # Use default logic
+                    strategy = self.orderbook_analyzer.get_execution_strategy(
+                        symbol, adjusted_quantity, side.lower()
+                    )
+                    if strategy["strategy"] == "twap":
+                        order_type = OrderType.TWAP
+                        self.config.twap_slices = strategy.get("num_slices", 5)
+                    elif strategy["strategy"] == "limit":
+                        order_type = OrderType.LIMIT
+                    LOGGER.info(f"Order book recommends: {strategy['reason']}")
+                    
+            except Exception as e:
+                LOGGER.warning(f"Order book analysis failed, using fallback: {e}")
+        
         if order_type == OrderType.TWAP:
-            return self._execute_twap(symbol, side, quantity, current_price)
+            return self._execute_twap(symbol, side, adjusted_quantity, current_price)
         elif order_type == OrderType.LIMIT:
-            return self._execute_limit(symbol, side, quantity, current_price)
+            return self._execute_limit(symbol, side, adjusted_quantity, current_price)
         else:
-            return self._execute_market(symbol, side, quantity, current_price)
+            return self._execute_market(symbol, side, adjusted_quantity, current_price)
             
     def _execute_market(
         self,
