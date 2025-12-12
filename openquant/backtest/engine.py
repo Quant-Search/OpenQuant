@@ -7,6 +7,7 @@ import numpy as np
 
 from ..utils.logging import get_logger
 from .cost_model import SpreadSchedule, MarketImpactModel, TickRounder, TransactionCostModel
+from ..risk.adaptive_sizing import AdaptiveSizer, kelly_criterion, volatility_target_sizing
 
 LOGGER = get_logger(__name__)
 
@@ -268,6 +269,114 @@ def calculate_dynamic_funding_rate(
     return funding_cost
 
 
+def _calculate_position_sizes(
+    px: pd.Series,
+    sig: pd.Series,
+    sizing_method: str,
+    weight: float,
+    target_volatility: float,
+    kelly_fraction: float,
+    lookback_window: int,
+) -> pd.Series:
+    """Calculate dynamic position sizes per bar.
+    
+    Args:
+        px: Price series
+        sig: Signal series (-1, 0, 1)
+        sizing_method: 'fixed', 'kelly', 'volatility', or 'adaptive'
+        weight: Base weight for fixed sizing
+        target_volatility: Target volatility for volatility-based sizing
+        kelly_fraction: Kelly fraction for Kelly sizing
+        lookback_window: Lookback window for statistics
+        
+    Returns:
+        Series of position sizes (0.0 to 1.0+)
+    """
+    if sizing_method == "fixed":
+        return pd.Series(weight, index=px.index)
+    
+    elif sizing_method == "volatility":
+        ret = px.pct_change(fill_method=None).fillna(0.0)
+        rolling_vol = ret.rolling(window=lookback_window, min_periods=20).std()
+        annualization_factor = np.sqrt(252 * 24)  # Assuming hourly data
+        annualized_vol = rolling_vol * annualization_factor
+        
+        sizes = pd.Series(weight, index=px.index)
+        mask = annualized_vol > 0
+        sizes[mask] = target_volatility / annualized_vol[mask]
+        sizes = sizes.clip(0.0, 2.0)  # Cap at 2x leverage
+        
+        return sizes.fillna(weight)
+    
+    elif sizing_method == "kelly":
+        ret = px.pct_change(fill_method=None).fillna(0.0)
+        
+        # Calculate rolling win rate and win/loss ratio
+        sizes = pd.Series(weight, index=px.index)
+        
+        for i in range(lookback_window, len(px)):
+            window_returns = ret.iloc[max(0, i-lookback_window):i]
+            window_signals = sig.iloc[max(0, i-lookback_window):i]
+            
+            # Get realized returns when signal was non-zero
+            active_mask = window_signals != 0
+            if active_mask.sum() < 10:  # Need minimum trades
+                continue
+                
+            signal_returns = window_returns[active_mask] * window_signals[active_mask]
+            
+            wins = signal_returns[signal_returns > 0]
+            losses = signal_returns[signal_returns < 0]
+            
+            if len(wins) > 0 and len(losses) > 0:
+                win_rate = len(wins) / len(signal_returns)
+                avg_win = wins.mean()
+                avg_loss = abs(losses.mean())
+                
+                if avg_loss > 0:
+                    win_loss_ratio = avg_win / avg_loss
+                    kelly_size = kelly_criterion(win_rate, win_loss_ratio, fraction=kelly_fraction)
+                    sizes.iloc[i] = max(0.0, min(1.0, kelly_size))
+        
+        return sizes.fillna(weight)
+    
+    elif sizing_method == "adaptive":
+        ret = px.pct_change(fill_method=None).fillna(0.0)
+        rolling_vol = ret.rolling(window=lookback_window, min_periods=20).std()
+        annualization_factor = np.sqrt(252 * 24)  # Assuming hourly data
+        annualized_vol = rolling_vol * annualization_factor
+        
+        # Initialize AdaptiveSizer
+        sizer = AdaptiveSizer(method="volatility", target_risk=0.01, aggressive_mode=False)
+        
+        sizes = pd.Series(weight, index=px.index)
+        equity = 1.0
+        prev_pos = 0.0
+        
+        for i in range(1, len(px)):
+            # Update equity based on previous bar return
+            if prev_pos != 0:
+                bar_pnl = ret.iloc[i] * prev_pos
+                equity *= (1 + bar_pnl)
+                
+                # Update sizer with trade PnL when position closes
+                curr_sig = sig.iloc[i]
+                if curr_sig == 0 and prev_pos != 0:
+                    sizer.update(bar_pnl, current_equity=equity)
+            
+            # Get adaptive size
+            vol = annualized_vol.iloc[i] if not pd.isna(annualized_vol.iloc[i]) else 0.20
+            size = sizer.get_size(volatility=vol)
+            sizes.iloc[i] = size
+            
+            prev_pos = sig.iloc[i] * size
+        
+        return sizes.fillna(weight)
+    
+    else:
+        raise ValueError(f"Unknown sizing_method: {sizing_method}. Must be 'fixed', 'kelly', 'volatility', or 'adaptive'")
+
+
 def backtest_signals(
     df: pd.DataFrame,
     signals: pd.Series,
@@ -300,6 +409,10 @@ def backtest_signals(
     impact_model: Optional[MarketImpactModel] = None,
     tick_rounder: Optional[TickRounder] = None,
     use_enhanced_costs: bool = False,
+    sizing_method: str = "fixed",
+    target_volatility: float = 0.20,
+    kelly_fraction: float = 0.5,
+    lookback_window: int = 252,
 ) -> BacktestResult:
     """Backtest long/flat signals on Close prices with fees in basis points per trade.
     Args:
@@ -334,6 +447,10 @@ def backtest_signals(
         impact_model: MarketImpactModel for volume-dependent slippage.
         tick_rounder: TickRounder for tick size constraints.
         use_enhanced_costs: Enable enhanced cost modeling (spread_schedule, impact_model, tick_rounder).
+        sizing_method: Position sizing method ('fixed', 'kelly', 'volatility', 'adaptive').
+        target_volatility: Target annualized volatility for volatility-based sizing (e.g., 0.20).
+        kelly_fraction: Kelly fraction to use (e.g., 0.5 for Half Kelly).
+        lookback_window: Lookback window for calculating statistics (default: 252).
     Returns:
         BacktestResult with returns and equity curve (starting at 1.0).
     """
@@ -346,6 +463,17 @@ def backtest_signals(
     # Allow float signals for position sizing (e.g. 0.5, -0.2)
     sig = signals.reindex(px.index).fillna(0).astype(float)
     sig = sig.clip(-1.0, 1.0)  # Ensure valid range [-1, 1]
+
+    # Calculate dynamic position sizes based on sizing_method
+    position_sizes = _calculate_position_sizes(
+        px=px,
+        sig=sig,
+        sizing_method=sizing_method,
+        weight=weight,
+        target_volatility=target_volatility,
+        kelly_fraction=kelly_fraction,
+        lookback_window=lookback_window
+    )
 
     # Calculate ATR if SL/TP is enabled
     atr = None
@@ -364,7 +492,8 @@ def backtest_signals(
             atr = px.pct_change().rolling(14).std() * px
 
     ret = px.pct_change(fill_method=None).fillna(0.0)
-    pos = sig.shift(1).fillna(0.0).astype(float)
+    # Apply position sizes to signals (shift by 1 for lag)
+    pos = (sig * position_sizes).shift(1).fillna(0.0).astype(float)
     
     # SL/TP Logic: Modify position based on intraday price movements
     if stop_loss_atr or take_profit_atr:
@@ -432,8 +561,8 @@ def backtest_signals(
         
         # Volume-dependent market impact
         if "Volume" in df.columns:
-            # Calculate notional order sizes
-            order_notional = pos_change * w * lev * px
+            # Calculate notional order sizes (pos_change already includes dynamic sizing)
+            order_notional = pos_change * lev * px
             impact_slippage_bps = impact_model.calculate_impact_series(
                 df=df,
                 order_sizes=order_notional
@@ -451,20 +580,20 @@ def backtest_signals(
             # Use rounded returns for P&L calculation
             ret = ret_rounded
         
-        # Calculate total costs
-        fee = pos_change * w * lev * (fee_bps / 10000.0)
-        spread_cost = pos_change * w * lev * (dynamic_spread_bps / 10000.0)
-        slippage_cost = pos_change * w * lev * (impact_slippage_bps / 10000.0)
+        # Calculate total costs (pos_change already includes dynamic sizing)
+        fee = pos_change * lev * (fee_bps / 10000.0)
+        spread_cost = pos_change * lev * (dynamic_spread_bps / 10000.0)
+        slippage_cost = pos_change * lev * (impact_slippage_bps / 10000.0)
     else:
-        # Fee cost (always applied)
-        fee = pos_change * w * lev * (fee_bps / 10000.0)
+        # Fee cost (always applied) (pos_change already includes dynamic sizing)
+        fee = pos_change * lev * (fee_bps / 10000.0)
         
         # Enhanced Spread Cost with Time-of-Day modeling
         if use_tod_spread and isinstance(px.index, pd.DatetimeIndex):
             spread_bps_series = calculate_tod_spread(px.index, spread_bps, tod_multipliers)
-            spread_cost = pos_change * w * lev * (spread_bps_series / 10000.0)
+            spread_cost = pos_change * lev * (spread_bps_series / 10000.0)
         else:
-            spread_cost = pos_change * w * lev * (spread_bps / 10000.0) if spread_bps > 0 else 0.0
+            spread_cost = pos_change * lev * (spread_bps / 10000.0) if spread_bps > 0 else 0.0
         
         # Enhanced Slippage Cost with Volume dependency
         if use_volume_slippage and "Volume" in df.columns:
@@ -472,9 +601,9 @@ def backtest_signals(
             slippage_bps_series = calculate_volume_slippage(
                 volumes, pos_change, slippage_bps, volume_impact_coeff
             )
-            slippage_cost = pos_change * w * lev * (slippage_bps_series / 10000.0)
+            slippage_cost = pos_change * lev * (slippage_bps_series / 10000.0)
         else:
-            slippage_cost = pos_change * w * lev * (slippage_bps / 10000.0) if slippage_bps > 0 else 0.0
+            slippage_cost = pos_change * lev * (slippage_bps / 10000.0) if slippage_bps > 0 else 0.0
 
     # Swap Cost Calculation (Overnight holding)
     # Identify days where position was held overnight (23:59 -> 00:00)
@@ -499,10 +628,10 @@ def backtest_signals(
         swap_pct_long = (swap_long * pip_value) / px
         swap_pct_short = (swap_short * pip_value) / px
         
-        # Apply to long positions
-        swap_cost += (pos > 0) * day_change * swap_pct_long.abs() * w * lev * (-1 if swap_long < 0 else 1)
+        # Apply to long positions (pos already includes dynamic sizing)
+        swap_cost += (pos > 0) * day_change * swap_pct_long.abs() * lev * (-1 if swap_long < 0 else 1)
         # Apply to short positions
-        swap_cost += (pos < 0) * day_change * swap_pct_short.abs() * w * lev * (-1 if swap_short < 0 else 1)
+        swap_cost += (pos < 0) * day_change * swap_pct_short.abs() * lev * (-1 if swap_short < 0 else 1)
         
         # Note: swap_long is usually negative (cost). If positive, it's a gain.
         # The formula above adds the swap value (positive or negative) to returns.
@@ -519,11 +648,11 @@ def backtest_signals(
         f_short = -1 * (funding_bps_short / 10000.0)
         
         swap_impact = pd.Series(0.0, index=px.index)
-        swap_impact += (pos > 0) * day_change * s_long * w * lev
-        swap_impact += (pos < 0) * day_change * s_short * w * lev
+        swap_impact += (pos > 0) * day_change * s_long * lev
+        swap_impact += (pos < 0) * day_change * s_short * lev
         # Funding impact (crypto perpetuals)
-        swap_impact += (pos > 0) * day_change * f_long * w * lev
-        swap_impact += (pos < 0) * day_change * f_short * w * lev
+        swap_impact += (pos > 0) * day_change * f_long * lev
+        swap_impact += (pos < 0) * day_change * f_short * lev
         
         # swap_impact is the % return impact. Negative = loss, Positive = gain.
         # We add it to strat_ret.
@@ -533,14 +662,15 @@ def backtest_signals(
     # Enhanced Market Impact model for large orders
     if use_market_impact and "Volume" in df.columns:
         volumes = df["Volume"].astype(float)
+        # For market impact with dynamic sizing, we need to pass w=1.0 since pos_change already includes sizing
         impact_bps_series = calculate_market_impact(
-            px, pos_change, volumes, w, lev, participation_rate, impact_exponent
+            px, pos_change, volumes, 1.0, lev, participation_rate, impact_exponent
         )
-        impact_cost = pos_change * w * lev * (impact_bps_series / 10000.0)
+        impact_cost = pos_change * lev * (impact_bps_series / 10000.0)
     elif not use_enhanced_costs and impact_coeff > 0.0:
         # Legacy simple market impact model
         vol = ret.rolling(20).std().fillna(0.0)
-        impact_cost = pos_change * w * lev * impact_coeff * vol
+        impact_cost = pos_change * lev * impact_coeff * vol
     else:
         impact_cost = 0.0
     
@@ -550,19 +680,20 @@ def backtest_signals(
             px.index, pos, px, index_prices, funding_rate_bps,
             funding_interval_hours, premium_sensitivity
         )
-        funding_cost = w * lev * (funding_cost_bps / 10000.0)
+        funding_cost = lev * (funding_cost_bps / 10000.0)
     elif funding_rate_bps != 0.0 and isinstance(px.index, pd.DatetimeIndex):
         # Simple funding rate model
         funding_cost_bps = calculate_funding_rate(
             px.index, pos, funding_rate_bps, funding_interval_hours
         )
-        funding_cost = w * lev * (funding_cost_bps / 10000.0)
+        funding_cost = lev * (funding_cost_bps / 10000.0)
     else:
         funding_cost = 0.0
     
     # Combine all cost components
     # Note: swap_impact is already in return % terms from legacy code
-    strat_ret = (pos * w * lev) * ret - fee - spread_cost - slippage_cost - impact_cost - funding_cost + swap_impact
+    # pos already includes dynamic sizing from position_sizes
+    strat_ret = (pos * lev) * ret - fee - spread_cost - slippage_cost - impact_cost - funding_cost + swap_impact
     equity = (1.0 + strat_ret).cumprod()
 
     trades = pos_change
@@ -575,14 +706,14 @@ def backtest_signals(
                 td_rows.append({
                     "ts": ts,
                     "side": "BUY" if pos.iloc[i] > 0 else "SELL",
-                    "delta_units": float(pos_change.iloc[i] * w * lev),
+                    "delta_units": float(pos_change.iloc[i] * lev),
                     "price": float(px.shift(1).iloc[i] if i > 0 else px.iloc[i]),
                 })
             elif exits.iloc[i]:
                 td_rows.append({
                     "ts": ts,
                     "side": "SELL" if pos.shift(1).iloc[i] > 0 else "BUY",
-                    "delta_units": float(pos_change.iloc[i] * w * lev),
+                    "delta_units": float(pos_change.iloc[i] * lev),
                     "price": float(px.shift(1).iloc[i] if i > 0 else px.iloc[i]),
                 })
         trade_details = pd.DataFrame(td_rows)
