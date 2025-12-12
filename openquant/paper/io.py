@@ -16,7 +16,8 @@ def save_state(state: PortfolioState, path: str | Path) -> None:
     p.parent.mkdir(parents=True, exist_ok=True)
     data: Dict[str, Any] = {
         "cash": float(state.cash),
-        "holdings": {"|".join(k): float(v) for k, v in state.holdings.items()},
+        # Filtrer les positions quasi nulles pour éviter des valeurs -0.000
+        "holdings": {"|".join(k): float(v) for k, v in state.holdings.items() if abs(float(v)) >= 1e-8},
     }
     with open(p, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)

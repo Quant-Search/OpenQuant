@@ -1,0 +1,41 @@
+{
+  "total_return": -15.762509246787227,
+  "total_trades": 1768,
+  "win_rate": 0.3376696832579186,
+  "profit_factor": 0.82748080724508,
+  "by_strategy": {
+    "mr": {
+      "wins": 273,
+      "losses": 469,
+      "pnl": 6.237714772320076
+    },
+    "breakout": {
+      "wins": 0,
+      "losses": 0,
+      "pnl": 0
+    },
+    "scalp": {
+      "wins": 324,
+      "losses": 702,
+      "pnl": -22.000224019107318
+    }
+  },
+  "by_pair": {
+    "EURUSD": {
+      "wins": 229,
+      "losses": 356,
+      "pnl": 1.6754252722966891
+    },
+    "GBPUSD": {
+      "wins": 176,
+      "losses": 423,
+      "pnl": -12.15000605824179
+    },
+    "USDJPY": {
+      "wins": 192,
+      "losses": 392,
+      "pnl": -5.287928460842142
+    }
+  },
+  "timestamp": "2025-12-06T13:30:27.966249"
+}

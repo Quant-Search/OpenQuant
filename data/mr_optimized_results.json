@@ -1,0 +1,24 @@
+{
+  "total_return": -14.943623206854324,
+  "leverage": 5,
+  "total_trades": 826,
+  "win_rate": 0.3486682808716707,
+  "profit_factor": 0.438245186765224,
+  "by_pair": {
+    "EURUSD": {
+      "wins": 98,
+      "losses": 175,
+      "pnl": -3.3974861369804916
+    },
+    "GBPUSD": {
+      "wins": 89,
+      "losses": 185,
+      "pnl": -5.8641529214939965
+    },
+    "USDJPY": {
+      "wins": 101,
+      "losses": 178,
+      "pnl": -5.681984148379839
+    }
+  }
+}

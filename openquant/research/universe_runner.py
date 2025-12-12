@@ -87,6 +87,7 @@ def run_universe(
     allocation_slot: float | None = 0.05,
     # Explicit symbols override
     symbols: List[str] | None = None,
+    use_opt_actions: bool = True,
 ) -> Path:
     """Discover liquid symbols and run SMA/EMA/RSI/MACD/Bollinger research across symbols/timeframes.
     Optimization and WFO are enabled by default; results are persisted to DuckDB and reported.
@@ -102,6 +103,28 @@ def run_universe(
 
     is_mt5 = (exchange.lower() == "mt5")
     source_key = ("mt5" if is_mt5 else f"ccxt:{exchange}")
+    try:
+        from openquant.reporting.intelligent_alerts import IntelligentAlerts
+        _alerts_mgr = IntelligentAlerts()
+        try:
+            import json
+            from pathlib import Path as _P
+            opt_path = _P("data/optimization_actions.json")
+            if use_opt_actions and opt_path.exists():
+                with open(opt_path, "r") as f:
+                    actions = json.load(f)
+                mul = float(actions.get("optuna_trials_multiplier", 1.0))
+                if mul and mul > 0:
+                    optuna_trials = int(max(8, min(100, round(optuna_trials * mul))))
+                overrides = actions.get("param_grid_overrides", {})
+                if overrides:
+                    param_grids = param_grids or {}
+                    for k, v in overrides.items():
+                        param_grids[str(k)] = v
+        except Exception:
+            pass
+    except Exception:
+        _alerts_mgr = None
     
     if symbols is None:
         if is_mt5:
@@ -118,6 +141,16 @@ def run_universe(
 
     rows: List[Dict[str, Any]] = []
     counters: Dict[str, int] = {"guardrail_violations": 0}
+
+    def _default_costs_for_exchange(ex: str) -> tuple[float, float]:
+        e = (ex or "").lower()
+        if e in {"binance", "bybit", "okx"}:
+            return 7.0, 10.0
+        if e == "mt5":
+            return 0.5, 0.0
+        if e == "alpaca":
+            return 1.0, 5.0
+        return 5.0, 8.0
 
     # Strategy-specific parameter grids helpers (defined outside worker)
     def _default_grid_for(name: str) -> Dict[str, Iterable[Any]]:
@@ -354,7 +387,9 @@ def run_universe(
                 try:
                     strat = make_strategy(strat_name, **params)
                     sig = strat.generate_signals(df)
-                    res = backtest_signals(df, sig, fee_bps=fee_bps, weight=weight)
+                    fee_default, slip_default = _default_costs_for_exchange(exchange)
+                    fee_eff = float(fee_bps) if fee_bps is not None else fee_default
+                    res = backtest_signals(df, sig, fee_bps=fee_eff, slippage_bps=slip_default, weight=weight)
                     issues_s = validate_signals(df, sig)
                     issues_b = validate_backtest(res)
                     ok_base = (len(issues_d) == 0) and (len(issues_s) == 0) and (len(issues_b) == 0)
@@ -366,6 +401,32 @@ def run_universe(
                     return None
                 freq = _freq_from_timeframe(tf)
                 s = sharpe(res.returns, freq=freq)
+                try:
+                    from openquant.backtest.metrics import sortino as _sortino
+                    sortino_val = _sortino(res.returns, freq=freq)
+                except Exception:
+                    sortino_val = 0.0
+                # Profit factor from returns
+                try:
+                    r_arr = res.returns.dropna().values
+                    pos_sum = float((r_arr[r_arr>0]).sum()) if r_arr.size else 0.0
+                    neg_sum = float(abs((r_arr[r_arr<0]).sum())) if r_arr.size else 0.0
+                    profit_factor = float(pos_sum / neg_sum) if neg_sum > 0 else float('inf')
+                except Exception:
+                    profit_factor = 0.0
+                try:
+                    from openquant.backtest.metrics import win_rate as _win_rate, monte_carlo_bootstrap
+                    win = _win_rate(res.returns)
+                    mc = monte_carlo_bootstrap(res.returns, n=300, block=10, freq=freq)
+                    import numpy as _np
+                    mc_s_p05 = float(_np.percentile(mc["sharpe"], 5)) if mc.get("sharpe") else 0.0
+                    mc_s_p95 = float(_np.percentile(mc["sharpe"], 95)) if mc.get("sharpe") else 0.0
+                    mc_dd_p95 = float(_np.percentile(mc["max_dd"], 95)) if mc.get("max_dd") else 0.0
+                except Exception:
+                    win = 0.0
+                    mc_s_p05 = 0.0
+                    mc_s_p95 = 0.0
+                    mc_dd_p95 = 0.0
                 # Guardrails inputs: compute worst daily loss magnitude
                 worst_daily_loss = None
                 try:
@@ -385,6 +446,24 @@ def run_universe(
                     var = float(np.quantile(losses, 0.95))
                     tail = losses[losses >= var]
                     cvar_val = float(tail.mean()) if tail.size else 0.0
+                # Statistical significance test (daily aggregation)
+                try:
+                    daily_ret = res.returns.resample('1D').sum().dropna()
+                    n = int(daily_ret.size)
+                    if n > 2:
+                        import numpy as _np
+                        mu = float(daily_ret.mean())
+                        sd = float(daily_ret.std(ddof=1))
+                        t_stat = mu / (sd / (_np.sqrt(n))) if sd > 0 else 0.0
+                        # Normal approx p-value (two-sided)
+                        from math import erf, sqrt
+                        def _norm_cdf(x: float) -> float:
+                            return 0.5 * (1.0 + erf(x / sqrt(2.0)))
+                        p_value = float(2.0 * (1.0 - _norm_cdf(abs(t_stat))))
+                    else:
+                        p_value = 1.0
+                except Exception:
+                    p_value = 1.0
                 # Get Forex config if applicable
                 from openquant.config.forex import get_spread_bps, get_swap_cost, FOREX_CONFIG
                 
@@ -399,7 +478,8 @@ def run_universe(
 
                 res = backtest_signals(
                     df, sig, 
-                    fee_bps=fee_bps, 
+                    fee_bps=fee_eff, 
+                    slippage_bps=slip_default,
                     weight=1.0, 
                     stop_loss_atr=params.get("stop_loss_atr"),
                     take_profit_atr=params.get("take_profit_atr"),
@@ -407,8 +487,17 @@ def run_universe(
                     leverage=lev,
                     swap_long=swap_l,
                     swap_short=swap_s,
+                    funding_bps_long=0.0,
+                    funding_bps_short=0.0,
                     pip_value=pip_val
                 )
+                try:
+                    bench_ret = df['Close'].pct_change().fillna(0.0)
+                    bench_s = sharpe(bench_ret, freq=freq)
+                    alpha_s = s - bench_s
+                except Exception:
+                    bench_s = 0.0
+                    alpha_s = s
                 ok_guard, reasons = apply_guardrails(
                     max_drawdown=dd,
                     cvar=cvar_val,
@@ -438,6 +527,23 @@ def run_universe(
                         LOGGER.warning(f"WFO error {strat_name} {symbol} {tf}: {e}")
 
                 dsr = deflated_sharpe_ratio(s, T=r.size if r.size else 1, trials=max(trials,1))
+                # Regime-segmented metrics
+                try:
+                    ret_prices = df['Close'].pct_change().fillna(0.0)
+                    trend_roll = ret_prices.rolling(50).mean()
+                    vol_roll = ret_prices.rolling(50).std()
+                    vol_thresh = float(ret_prices.std() * 1.5)
+                    bull_mask = (trend_roll > 0)
+                    bear_mask = (trend_roll < 0)
+                    vol_mask = (vol_roll > vol_thresh)
+                    calm_mask = (vol_roll <= vol_thresh)
+                    r_series = res.returns.reindex(df.index).fillna(0.0)
+                    bull_s = sharpe(r_series[bull_mask], freq=freq) if bull_mask.any() else 0.0
+                    bear_s = sharpe(r_series[bear_mask], freq=freq) if bear_mask.any() else 0.0
+                    vol_s = sharpe(r_series[vol_mask], freq=freq) if vol_mask.any() else 0.0
+                    calm_s = sharpe(r_series[calm_mask], freq=freq) if calm_mask.any() else 0.0
+                except Exception:
+                    bull_s = bear_s = vol_s = calm_s = 0.0
                 # Skip storing returns for correlation here - it's memory intensive
                 # Correlation filter will be applied at allocation time if needed
                 return {
@@ -447,7 +553,7 @@ def run_universe(
                     "timeframe": tf,
                     "params": params,
                     "bars": int(len(df)),
-                    "metrics": {"sharpe": s, "dsr": dsr, "max_dd": dd, "cvar": cvar_val, "n_trades": n_trades, "ok": ok, "wfo_mts": wfo_mts},
+                    "metrics": {"sharpe": s, "sortino": sortino_val, "alpha_sharpe": alpha_s, "bench_sharpe": bench_s, "win_rate": win, "profit_factor": profit_factor, "mc_sharpe_p05": mc_s_p05, "mc_sharpe_p95": mc_s_p95, "mc_dd_p95": mc_dd_p95, "bull_sharpe": bull_s, "bear_sharpe": bear_s, "volatile_sharpe": vol_s, "calm_sharpe": calm_s, "dsr": dsr, "max_dd": dd, "cvar": cvar_val, "p_value": p_value, "n_trades": n_trades, "ok": ok, "wfo_mts": wfo_mts},
                 }
 
             if max_workers and max_workers > 1:
@@ -528,6 +634,14 @@ def run_universe(
         try:
             upsert_results(rows, db_path=results_db, run_id=run_id)
             LOGGER.info(f"Stored {len(rows)} rows in DB: {results_db}")
+            try:
+                if _alerts_mgr:
+                    _alerts_mgr.run_diagnostics_on_results(results_db, run_id=run_id)
+                    _alerts_mgr.generate_diagnostic_report(results_db, run_id=run_id)
+                    _alerts_mgr.propose_optimization_actions(results_db, run_id=run_id)
+                    _alerts_mgr.save_alerts()
+            except Exception as e:
+                LOGGER.warning(f"Diagnostics post-upsert failed: {e}")
         except Exception as e:
             LOGGER.warning(f"Failed to store results in DB {results_db}: {e}")
 
@@ -545,6 +659,7 @@ def run_universe(
                 max_total_weight=float(max_total_exposure),
                 max_symbol_weight=float(max_exposure_per_symbol or 1.0),
                 slot_weight=float(allocation_slot),
+                regime_bias=("bull" if str(global_trend).lower()=="bull" else ("bear" if str(global_trend).lower()=="bear" else None)),
             )
     except Exception as e:
         LOGGER.warning(f"Allocation proposal failed: {e}")
