@@ -1,0 +1,23 @@
+pandas
+numpy
+pyyaml
+python-dotenv
+pytest
+# Optional extras used by the project; install as needed
+yfinance
+ccxt
+matplotlib
+duckdb
+optuna
+streamlit
+pyinstaller
+plotly
+# pandas_ta  # Temporarily disabled due to Python 3.14 compatibility
+psutil
+statsmodels
+arch
+filterpy
+scipy
+hurst
+alpaca-py
+scikit-learn

@@ -357,6 +357,192 @@ class AuditTrail:
         finally:
             con.close()
 
+    def get_trade_pairs(
+        self,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None,
+        symbol: Optional[str] = None,
+        strategy: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Get matched entry/exit pairs for performance attribution.
+        
+        Returns list of completed trades with entry and exit information.
+        """
+        con = self._get_connection()
+        try:
+            conditions = ["event_type = 'ORDER_EXECUTION'"]
+            params = []
+            
+            if start_time:
+                conditions.append("timestamp >= ?")
+                params.append(start_time)
+            if end_time:
+                conditions.append("timestamp <= ?")
+                params.append(end_time)
+            if symbol:
+                conditions.append("symbol = ?")
+                params.append(symbol)
+            if strategy:
+                conditions.append("strategy = ?")
+                params.append(strategy)
+                
+            where_clause = " AND ".join(conditions)
+            
+            result = con.execute(f"""
+                SELECT 
+                    symbol,
+                    strategy,
+                    side,
+                    quantity,
+                    price,
+                    timestamp,
+                    message,
+                    details
+                FROM audit_events
+                WHERE {where_clause}
+                ORDER BY symbol, strategy, timestamp
+            """, params).fetchall()
+            
+            columns = ["symbol", "strategy", "side", "quantity", "price", "timestamp", "message", "details"]
+            return [dict(zip(columns, row)) for row in result]
+        finally:
+            con.close()
+
+    def get_execution_quality_metrics(
+        self,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None
+    ) -> Dict[str, Any]:
+        """
+        Calculate execution quality metrics from audit trail.
+        
+        Compares ORDER_DECISION prices (intended) vs ORDER_EXECUTION prices (actual).
+        """
+        con = self._get_connection()
+        try:
+            conditions = []
+            params = []
+            
+            if start_time:
+                conditions.append("timestamp >= ?")
+                params.append(start_time)
+            if end_time:
+                conditions.append("timestamp <= ?")
+                params.append(end_time)
+                
+            where_clause = " AND ".join(conditions) if conditions else "1=1"
+            
+            decisions = con.execute(f"""
+                SELECT symbol, strategy, price, timestamp
+                FROM audit_events
+                WHERE event_type = 'ORDER_DECISION' AND {where_clause}
+                ORDER BY timestamp
+            """, params).fetchall()
+            
+            executions = con.execute(f"""
+                SELECT symbol, strategy, price, timestamp
+                FROM audit_events
+                WHERE event_type = 'ORDER_EXECUTION' AND {where_clause}
+                ORDER BY timestamp
+            """, params).fetchall()
+            
+            if not decisions or not executions:
+                return {
+                    "total_decisions": len(decisions),
+                    "total_executions": len(executions),
+                    "execution_rate": 0.0,
+                    "avg_slippage_bps": 0.0
+                }
+                
+            execution_rate = len(executions) / len(decisions) if decisions else 0
+            
+            return {
+                "total_decisions": len(decisions),
+                "total_executions": len(executions),
+                "execution_rate": execution_rate
+            }
+        finally:
+            con.close()
+
+    def get_signal_to_execution_lag(
+        self,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None
+    ) -> Dict[str, Any]:
+        """
+        Analyze lag between signal generation and execution.
+        
+        Useful for understanding timing delays in the trading system.
+        """
+        con = self._get_connection()
+        try:
+            conditions = []
+            params = []
+            
+            if start_time:
+                conditions.append("timestamp >= ?")
+                params.append(start_time)
+            if end_time:
+                conditions.append("timestamp <= ?")
+                params.append(end_time)
+                
+            where_clause = " AND ".join(conditions) if conditions else "1=1"
+            
+            result = con.execute(f"""
+                WITH signals AS (
+                    SELECT symbol, strategy, timestamp as signal_time
+                    FROM audit_events
+                    WHERE event_type = 'SIGNAL' AND {where_clause}
+                ),
+                executions AS (
+                    SELECT symbol, strategy, timestamp as exec_time
+                    FROM audit_events
+                    WHERE event_type = 'ORDER_EXECUTION' AND {where_clause}
+                )
+                SELECT 
+                    s.symbol,
+                    s.strategy,
+                    s.signal_time,
+                    e.exec_time,
+                    EXTRACT(EPOCH FROM (e.exec_time - s.signal_time)) as lag_seconds
+                FROM signals s
+                JOIN executions e 
+                    ON s.symbol = e.symbol 
+                    AND s.strategy = e.strategy
+                    AND e.exec_time >= s.signal_time
+                    AND e.exec_time <= s.signal_time + INTERVAL '5 minutes'
+            """, params).fetchall()
+            
+            if not result:
+                return {
+                    "count": 0,
+                    "avg_lag_seconds": 0.0,
+                    "median_lag_seconds": 0.0,
+                    "max_lag_seconds": 0.0
+                }
+                
+            lags = [row[4] for row in result if row[4] is not None]
+            
+            if not lags:
+                return {
+                    "count": 0,
+                    "avg_lag_seconds": 0.0,
+                    "median_lag_seconds": 0.0,
+                    "max_lag_seconds": 0.0
+                }
+                
+            import statistics
+            return {
+                "count": len(lags),
+                "avg_lag_seconds": statistics.mean(lags),
+                "median_lag_seconds": statistics.median(lags),
+                "max_lag_seconds": max(lags),
+                "min_lag_seconds": min(lags)
+            }
+        finally:
+            con.close()
+
 
 # Global instance
 AUDIT_TRAIL = AuditTrail()

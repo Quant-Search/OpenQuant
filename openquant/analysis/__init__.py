@@ -1,7 +1,14 @@
 """Analysis modules for OpenQuant.
 
-Includes TCA monitoring, execution quality tracking, and sentiment analysis.
+Includes TCA monitoring, execution quality tracking, sentiment analysis,
+and performance attribution.
 """
+from .attribution import (
+    PerformanceAttributor,
+    AttributionResult,
+    TradeAttribution,
+    quick_attribution
+)
 from .tca import TCAMonitor
 from .execution_quality import (
     ExecutionQualityMonitor,
@@ -11,6 +18,10 @@ from .execution_quality import (
 from .sentiment import SentimentAnalyzer
 
 __all__ = [
+    "PerformanceAttributor",
+    "AttributionResult", 
+    "TradeAttribution",
+    "quick_attribution",
     "TCAMonitor",
     "ExecutionQualityMonitor",
     "ExecutionQualityMetrics",
