@@ -213,3 +213,32 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Test artifacts
+.pytest_cache/
+*.pytest_cache
+test_results.xml
+test-results/
+htmlcov/
+.coverage
+
+# Integration test temporary files
+tests/integration/.tmp/
+tests/integration/temp_*/
+*.duckdb
+*.duckdb.wal
+
+# Risk management state files (test artifacts)
+data/STOP
+data/circuit_breaker_state.json
+data/kill_switch_state.json
+
+# Paper trading state (test artifacts)
+data/paper_state.json
+data/allocation_*.json
+data/signals.csv
+
+# Reports generated during tests
+reports/run_summary_*.md
+reports/universe_summary_*.md
+reports/allocation_*.json
