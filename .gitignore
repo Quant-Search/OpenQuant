@@ -295,3 +295,7 @@ reports/*.pdf
 reports/*.html
 reports/*.png
 reports/*.jpg
+
+# Temporary requirements files
+requirements_temp.txt
+temp_requirements.txt
