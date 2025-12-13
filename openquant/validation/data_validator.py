@@ -543,55 +543,216 @@ def detect_volume_anomalies(df: pd.DataFrame, window: int = 20, sigma_threshold:
 
 def clean_ohlcv(df: pd.DataFrame, 
                 fill_method: str = "ffill",
-                remove_outliers: bool = True,
-                iqr_multiplier: float = 2.5) -> pd.DataFrame:
-    """Clean OHLCV data by filling gaps and removing outliers.
+                outlier_method: str = "iqr",
+                iqr_multiplier: float = 2.5,
+                grubbs_alpha: float = 0.05,
+                cap_outliers: bool = False,
+                handle_zero_volume: bool = True,
+                zero_volume_fill: float = None) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+    """
+    Clean OHLCV data by filling time-series gaps, removing/capping outliers, and handling zero-volume bars.
+    
+    This function performs comprehensive data cleaning:
+    1. Fills time-series gaps using forward-fill or interpolation
+    2. Detects and removes/caps outliers using Grubbs test and/or IQR methods
+    3. Handles zero-volume bars
+    4. Returns cleaned DataFrame with metadata about applied corrections
     
     Args:
-        df: DataFrame with OHLCV data
-        fill_method: Method to fill gaps ('ffill', 'bfill', 'interpolate')
-        remove_outliers: Whether to remove outliers (default True)
-        iqr_multiplier: IQR multiplier for outlier detection (default 2.5)
+        df: DataFrame with OHLCV data and DatetimeIndex.
+        fill_method: Method to fill gaps ('ffill', 'bfill', 'interpolate').
+        outlier_method: Outlier detection method ('iqr', 'grubbs', 'both').
+        iqr_multiplier: IQR multiplier for outlier detection (default 2.5).
+        grubbs_alpha: Significance level for Grubbs test (default 0.05).
+        cap_outliers: If True, cap outliers instead of removing them (default False).
+        handle_zero_volume: Whether to handle zero-volume bars (default True).
+        zero_volume_fill: Value to fill zero-volume bars. If None, use median volume.
         
     Returns:
-        Cleaned DataFrame
+        Tuple of (cleaned_df, metadata_dict):
+        - cleaned_df: Cleaned DataFrame
+        - metadata_dict: Dictionary with information about applied corrections:
+            {
+                "original_rows": int,
+                "cleaned_rows": int,
+                "gaps_filled": int,
+                "outliers_detected": Dict[str, int],  # per column
+                "outliers_removed": Dict[str, int],   # per column
+                "outliers_capped": Dict[str, int],    # per column
+                "zero_volume_bars": int,
+                "zero_volume_filled": int,
+                "time_gaps_filled": List[Dict],
+                "fill_method_used": str,
+                "outlier_method_used": str
+            }
     """
     if len(df) == 0:
-        return df.copy()
+        metadata = {
+            "original_rows": 0,
+            "cleaned_rows": 0,
+            "gaps_filled": 0,
+            "outliers_detected": {},
+            "outliers_removed": {},
+            "outliers_capped": {},
+            "zero_volume_bars": 0,
+            "zero_volume_filled": 0,
+            "time_gaps_filled": [],
+            "fill_method_used": fill_method,
+            "outlier_method_used": outlier_method
+        }
+        return df.copy(), metadata
+    
+    # Initialize metadata
+    metadata = {
+        "original_rows": len(df),
+        "cleaned_rows": 0,
+        "gaps_filled": 0,
+        "outliers_detected": {},
+        "outliers_removed": {},
+        "outliers_capped": {},
+        "zero_volume_bars": 0,
+        "zero_volume_filled": 0,
+        "time_gaps_filled": [],
+        "fill_method_used": fill_method,
+        "outlier_method_used": outlier_method
+    }
+    
+    # Validate required columns
+    req = {"Open", "High", "Low", "Close", "Volume"}
+    if not req.issubset(df.columns):
+        metadata["cleaned_rows"] = len(df)
+        return df.copy(), metadata
     
     cleaned = df.copy()
+    price_cols = ["Open", "High", "Low", "Close"]
     
-    req = {"Open", "High", "Low", "Close", "Volume"}
-    if not req.issubset(cleaned.columns):
-        return cleaned
+    # Step 1: Detect and fill time-series gaps
+    if isinstance(cleaned.index, pd.DatetimeIndex) and len(cleaned) >= 2:
+        # Detect gaps before filling
+        time_diffs = cleaned.index.to_series().diff().dropna()
+        median_diff_minutes = time_diffs.median().total_seconds() / 60.0
+        gap_threshold = max(median_diff_minutes * 3, 60)
+        gaps_before = detect_gaps(cleaned, max_gap_minutes=gap_threshold)
+        metadata["time_gaps_filled"] = gaps_before
     
-    if remove_outliers and len(cleaned) >= 4:
-        price_cols = ["Open", "High", "Low", "Close"]
-        
-        for col in price_cols:
-            valid_data = cleaned[col].dropna().values
+    # Step 2: Detect and handle outliers
+    if len(cleaned) >= 4:
+        for col in price_cols + ["Volume"]:
+            valid_data = cleaned[col].dropna()
             if len(valid_data) < 4:
                 continue
             
-            outliers_iqr = detect_outliers_iqr(cleaned[col], multiplier=iqr_multiplier)
+            # Initialize outlier mask
+            outlier_mask = pd.Series(False, index=cleaned.index)
             
-            if outliers_iqr.sum() > 0:
-                cleaned.loc[outliers_iqr, col] = np.nan
+            # IQR method
+            if outlier_method in ["iqr", "both"]:
+                outliers_iqr = detect_outliers_iqr(cleaned[col], multiplier=iqr_multiplier)
+                outlier_mask = outlier_mask | outliers_iqr
+            
+            # Grubbs test (iterative)
+            if outlier_method in ["grubbs", "both"] and len(valid_data) >= 3:
+                temp_data = cleaned[col].dropna().copy()
+                grubbs_outlier_indices = []
+                
+                # Iterative Grubbs test (detect multiple outliers)
+                max_iterations = min(10, len(temp_data) // 10)  # At most 10% of data
+                for _ in range(max_iterations):
+                    if len(temp_data) < 3:
+                        break
+                    
+                    has_outlier, _, outlier_idx = grubbs_test(temp_data.values, alpha=grubbs_alpha)
+                    if not has_outlier:
+                        break
+                    
+                    # Get actual index in original dataframe
+                    actual_idx = temp_data.index[outlier_idx]
+                    grubbs_outlier_indices.append(actual_idx)
+                    
+                    # Remove outlier and continue
+                    temp_data = temp_data.drop(actual_idx)
+                
+                # Mark Grubbs outliers in the mask
+                if grubbs_outlier_indices:
+                    outlier_mask.loc[grubbs_outlier_indices] = True
+            
+            # Record outlier counts
+            outlier_count = outlier_mask.sum()
+            metadata["outliers_detected"][col] = int(outlier_count)
+            
+            if outlier_count > 0:
+                if cap_outliers:
+                    # Cap outliers using IQR bounds
+                    Q1 = cleaned[col].quantile(0.25)
+                    Q3 = cleaned[col].quantile(0.75)
+                    IQR = Q3 - Q1
+                    lower_bound = Q1 - iqr_multiplier * IQR
+                    upper_bound = Q3 + iqr_multiplier * IQR
+                    
+                    # Cap values
+                    cleaned.loc[outlier_mask, col] = cleaned.loc[outlier_mask, col].clip(lower_bound, upper_bound)
+                    metadata["outliers_capped"][col] = int(outlier_count)
+                    metadata["outliers_removed"][col] = 0
+                else:
+                    # Remove outliers by setting to NaN
+                    cleaned.loc[outlier_mask, col] = np.nan
+                    metadata["outliers_removed"][col] = int(outlier_count)
+                    metadata["outliers_capped"][col] = 0
+            else:
+                metadata["outliers_removed"][col] = 0
+                metadata["outliers_capped"][col] = 0
+    
+    # Step 3: Handle zero-volume bars
+    if handle_zero_volume and "Volume" in cleaned.columns:
+        zero_volume_mask = cleaned["Volume"] == 0
+        zero_volume_count = zero_volume_mask.sum()
+        metadata["zero_volume_bars"] = int(zero_volume_count)
         
-        volume_outliers = detect_outliers_iqr(cleaned['Volume'], multiplier=iqr_multiplier)
-        if volume_outliers.sum() > 0:
-            cleaned.loc[volume_outliers, 'Volume'] = np.nan
+        if zero_volume_count > 0:
+            if zero_volume_fill is None:
+                # Use median of non-zero volumes
+                non_zero_volumes = cleaned.loc[~zero_volume_mask, "Volume"]
+                if len(non_zero_volumes) > 0:
+                    zero_volume_fill = non_zero_volumes.median()
+                else:
+                    zero_volume_fill = 1.0  # Default fallback
+            
+            cleaned.loc[zero_volume_mask, "Volume"] = zero_volume_fill
+            metadata["zero_volume_filled"] = int(zero_volume_count)
+        else:
+            metadata["zero_volume_filled"] = 0
+    
+    # Step 4: Fill remaining gaps/NaNs
+    gaps_before_fill = cleaned[price_cols + ["Volume"]].isna().sum().sum()
     
     if fill_method == "ffill":
-        cleaned[["Open", "High", "Low", "Close"]] = cleaned[["Open", "High", "Low", "Close"]].fillna(method='ffill')
-        cleaned["Volume"] = cleaned["Volume"].fillna(0)
+        cleaned[price_cols] = cleaned[price_cols].fillna(method='ffill')
+        cleaned[price_cols] = cleaned[price_cols].fillna(method='bfill')  # Backfill any leading NaNs
+        cleaned["Volume"] = cleaned["Volume"].fillna(method='ffill')
+        cleaned["Volume"] = cleaned["Volume"].fillna(0)  # Fill any remaining with 0
     elif fill_method == "bfill":
-        cleaned[["Open", "High", "Low", "Close"]] = cleaned[["Open", "High", "Low", "Close"]].fillna(method='bfill')
-        cleaned["Volume"] = cleaned["Volume"].fillna(0)
+        cleaned[price_cols] = cleaned[price_cols].fillna(method='bfill')
+        cleaned[price_cols] = cleaned[price_cols].fillna(method='ffill')  # Forward-fill any trailing NaNs
+        cleaned["Volume"] = cleaned["Volume"].fillna(method='bfill')
+        cleaned["Volume"] = cleaned["Volume"].fillna(0)  # Fill any remaining with 0
     elif fill_method == "interpolate":
-        cleaned[["Open", "High", "Low", "Close"]] = cleaned[["Open", "High", "Low", "Close"]].interpolate(method='linear')
+        cleaned[price_cols] = cleaned[price_cols].interpolate(method='linear', limit_direction='both')
+        cleaned["Volume"] = cleaned["Volume"].interpolate(method='linear', limit_direction='both')
+        cleaned["Volume"] = cleaned["Volume"].fillna(0)  # Fill any remaining with 0
+    else:
+        # Default to forward fill
+        cleaned[price_cols] = cleaned[price_cols].fillna(method='ffill')
+        cleaned[price_cols] = cleaned[price_cols].fillna(method='bfill')
         cleaned["Volume"] = cleaned["Volume"].fillna(0)
     
-    cleaned = cleaned.dropna(subset=["Close"])
+    gaps_after_fill = cleaned[price_cols + ["Volume"]].isna().sum().sum()
+    metadata["gaps_filled"] = int(gaps_before_fill - gaps_after_fill)
     
-    return cleaned
+    # Step 5: Drop rows that still have NaN in critical columns (Close)
+    rows_before_drop = len(cleaned)
+    cleaned = cleaned.dropna(subset=["Close"])
+    rows_dropped = rows_before_drop - len(cleaned)
+    
+    metadata["cleaned_rows"] = len(cleaned)
+    
+    return cleaned, metadata
