@@ -1,9 +1,10 @@
 import subprocess
 import sys
 
-# Read requirements and skip pandas_ta (incompatible with Python 3.14)
+# Read requirements and skip packages incompatible with Python 3.14
+skip_packages = ["pandas_ta", "numba", "dask", "redis"]
 with open("requirements.txt") as f:
-    reqs = [line.strip() for line in f if line.strip() and not line.startswith("#") and "pandas_ta" not in line]
+    reqs = [line.strip() for line in f if line.strip() and not line.startswith("#") and not any(pkg in line for pkg in skip_packages)]
 
 # Install each package
 python_exe = r".venv\Scripts\python.exe"
