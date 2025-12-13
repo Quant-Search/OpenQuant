@@ -18,6 +18,7 @@ from typing import Any
 from .base import BaseStrategy
 from .mixer import StrategyMixer
 from .ml_strategy import MLStrategy
+from .regime_adaptive import RegimeAdaptiveStrategy
 from .quant.hurst import HurstExponentStrategy
 from .quant.kalman import KalmanMeanReversionStrategy
 from .quant.market_micro import LiquidityProvisionStrategy
@@ -29,6 +30,7 @@ REGISTRY: dict[str, Callable[..., BaseStrategy]] = {
     "stat_arb": StatArbStrategy,
     "liquidity": LiquidityProvisionStrategy,
     "ml": MLStrategy,
+    "regime_adaptive": RegimeAdaptiveStrategy,
 }
 
 
