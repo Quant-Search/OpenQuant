@@ -400,6 +400,7 @@ def backtest_signals(
     funding_bps_short: float = 0.0,
     pip_value: float = 0.0001,
     impact_coeff: float = None,
+    sizing_method: str = None,
     config = None,
 ) -> BacktestResult:
     """Backtest long/flat signals on Close prices with fees in basis points per trade.
@@ -419,6 +420,11 @@ def backtest_signals(
         swap_long: Swap cost for long positions in pips per day (negative = cost).
         swap_short: Swap cost for short positions in pips per day.
         pip_value: Value of 1 pip in quote currency (e.g., 0.0001 for EURUSD).
+        sizing_method: Position sizing method ('fixed', 'kelly', 'volatility', 'adaptive').
+                       'fixed': Use static weight parameter
+                       'kelly': Kelly criterion based on historical win/loss
+                       'volatility': Target volatility sizing
+                       'adaptive': Full adaptive sizing with drawdown control
         config: ConfigManager instance (optional, loads from global if None)
     Returns:
         BacktestResult with returns and equity curve (starting at 1.0).
@@ -435,6 +441,10 @@ def backtest_signals(
     leverage = leverage if leverage is not None else bt_config.leverage
     impact_coeff = impact_coeff if impact_coeff is not None else bt_config.impact_coeff
     
+    # Determine sizing method
+    if sizing_method is None:
+        sizing_method = "fixed"  # Default to fixed weight
+    
     if "Close" not in df.columns:
         raise KeyError("DataFrame must contain 'Close' column")
     w = max(0.0, float(weight))
@@ -444,6 +454,12 @@ def backtest_signals(
     # Allow float signals for position sizing (e.g. 0.5, -0.2)
     sig = signals.reindex(px.index).fillna(0).astype(float)
     sig = sig.clip(-1.0, 1.0)  # Ensure valid range [-1, 1]
+    
+    # Initialize AdaptiveSizer if using adaptive methods
+    sizer = None
+    if sizing_method in ["kelly", "volatility", "adaptive"]:
+        from ..risk.adaptive_sizing import AdaptiveSizer
+        sizer = AdaptiveSizer(method=sizing_method, config=config)
 
     # Calculate ATR if SL/TP is enabled (using optimized Numba version)
     atr = None
@@ -473,38 +489,137 @@ def backtest_signals(
         
         # Apply optimized SL/TP logic
         pos_arr = apply_sl_tp_numba(pos_arr, px_arr, atr_arr, sl_atr, tp_atr)
+    
+    # Calculate dynamic position sizes per bar if using adaptive methods
+    weight_arr = np.full_like(pos_arr, w)  # Default to fixed weight
+    
+    if sizing_method != "fixed" and sizer is not None:
+        # Calculate rolling volatility for volatility-based methods
+        vol_window = 20
+        rolling_vol = pd.Series(ret_arr).rolling(vol_window).std() * np.sqrt(252)  # Annualized
+        
+        # Track equity for adaptive sizing
+        equity_value = 1.0
+        
+        for i in range(len(pos_arr)):
+            # Calculate volatility for current bar
+            current_vol = rolling_vol.iloc[i] if i >= vol_window and not pd.isna(rolling_vol.iloc[i]) else None
+            
+            # Get adaptive weight from sizer
+            adaptive_weight = sizer.get_size(volatility=current_vol)
+            weight_arr[i] = adaptive_weight
+            
+            # Update sizer with trade results for adaptive learning
+            if i > 0:
+                # Calculate bar return using previous bar's weight
+                bar_ret = ret_arr[i]
+                prev_pos = pos_arr[i-1]
+                prev_weight = weight_arr[i-1]
+                
+                # Update equity
+                equity_change = prev_pos * prev_weight * lev * bar_ret
+                equity_value += equity_change
+                
+                # Update sizer on position changes (trade completion)
+                if pos_arr[i] == 0 and prev_pos != 0:
+                    # Position closed - calculate PnL since entry
+                    # Find entry point
+                    entry_idx = i - 1
+                    while entry_idx > 0 and pos_arr[entry_idx-1] == prev_pos:
+                        entry_idx -= 1
+                    
+                    # Calculate trade PnL using actual weights from those bars
+                    trade_pnl = 0.0
+                    for j in range(entry_idx, i):
+                        trade_pnl += pos_arr[j] * weight_arr[j] * lev * ret_arr[j]
+                    
+                    sizer.update(pnl=trade_pnl, current_equity=equity_value)
+        
+        # Apply adaptive weights to position signals
+        pos_arr = pos_arr * weight_arr / w  # Scale signals by adaptive weight ratio
 
     # Vectorized position change calculation
     pos_change_arr = np.abs(np.diff(pos_arr, prepend=0.0))
     pos_change_arr[0] = np.abs(pos_arr[0])
     
-    # Vectorized fee/slippage/spread calculations
-    fees, spread_costs, slippage_costs = calculate_costs_vectorized(
-        pos_change_arr, w, lev, fee_bps, slippage_bps, spread_bps
-    )
-    
-    # Vectorized swap cost calculation
-    swap_impact = np.zeros_like(pos_arr)
-    if (swap_long != 0.0 or swap_short != 0.0) or (funding_bps_long != 0.0 or funding_bps_short != 0.0):
-        # Detect day change using vectorized operations
-        day_series = np.array([d.day for d in px.index])
-        day_shifted = np.roll(day_series, 1)
-        day_shifted[0] = day_series[0]
-        day_change = (day_series != day_shifted).astype(float)
-        
-        px_arr = px.values
-        swap_impact = calculate_swap_costs_vectorized(
-            pos_arr, day_change, px_arr, w, lev,
-            swap_long, swap_short, funding_bps_long, funding_bps_short, pip_value
+    # Calculate costs with dynamic weights
+    if sizing_method == "fixed":
+        # Use vectorized calculations for fixed weight (faster)
+        fees, spread_costs, slippage_costs = calculate_costs_vectorized(
+            pos_change_arr, w, lev, fee_bps, slippage_bps, spread_bps
         )
-    
-    # Vectorized market impact calculation
-    impact_costs = calculate_impact_cost_vectorized(
-        pos_change_arr, ret_arr, w, lev, impact_coeff, window=20
-    )
-    
-    # Calculate strategy returns
-    strat_ret_arr = (pos_arr * w * lev) * ret_arr - fees - spread_costs - slippage_costs - impact_costs + swap_impact
+        
+        # Vectorized swap cost calculation
+        swap_impact = np.zeros_like(pos_arr)
+        if (swap_long != 0.0 or swap_short != 0.0) or (funding_bps_long != 0.0 or funding_bps_short != 0.0):
+            # Detect day change using vectorized operations
+            day_series = np.array([d.day for d in px.index])
+            day_shifted = np.roll(day_series, 1)
+            day_shifted[0] = day_series[0]
+            day_change = (day_series != day_shifted).astype(float)
+            
+            px_arr = px.values
+            swap_impact = calculate_swap_costs_vectorized(
+                pos_arr, day_change, px_arr, w, lev,
+                swap_long, swap_short, funding_bps_long, funding_bps_short, pip_value
+            )
+        
+        # Vectorized market impact calculation
+        impact_costs = calculate_impact_cost_vectorized(
+            pos_change_arr, ret_arr, w, lev, impact_coeff, window=20
+        )
+        
+        # Calculate strategy returns
+        strat_ret_arr = (pos_arr * w * lev) * ret_arr - fees - spread_costs - slippage_costs - impact_costs + swap_impact
+    else:
+        # Use per-bar weight calculations for adaptive sizing
+        fees = np.zeros_like(pos_change_arr)
+        spread_costs = np.zeros_like(pos_change_arr)
+        slippage_costs = np.zeros_like(pos_change_arr)
+        
+        for i in range(len(pos_change_arr)):
+            wl = weight_arr[i] * lev
+            fees[i] = pos_change_arr[i] * wl * (fee_bps / 10000.0)
+            if spread_bps > 0:
+                spread_costs[i] = pos_change_arr[i] * wl * (spread_bps / 10000.0)
+            if slippage_bps > 0:
+                slippage_costs[i] = pos_change_arr[i] * wl * (slippage_bps / 10000.0)
+        
+        # Swap cost calculation with dynamic weights
+        swap_impact = np.zeros_like(pos_arr)
+        if (swap_long != 0.0 or swap_short != 0.0) or (funding_bps_long != 0.0 or funding_bps_short != 0.0):
+            day_series = np.array([d.day for d in px.index])
+            day_shifted = np.roll(day_series, 1)
+            day_shifted[0] = day_series[0]
+            day_change = (day_series != day_shifted).astype(float)
+            px_arr = px.values
+            
+            for i in range(len(pos_arr)):
+                if day_change[i] > 0:
+                    wl = weight_arr[i] * lev
+                    s_long = -1.0 * swap_long * pip_value / px_arr[i]
+                    s_short = -1.0 * swap_short * pip_value / px_arr[i]
+                    f_long = -1.0 * (funding_bps_long / 10000.0)
+                    f_short = -1.0 * (funding_bps_short / 10000.0)
+                    
+                    if pos_arr[i] > 0:
+                        swap_impact[i] = (s_long + f_long) * wl
+                    elif pos_arr[i] < 0:
+                        swap_impact[i] = (s_short + f_short) * wl
+        
+        # Market impact calculation with dynamic weights
+        impact_costs = np.zeros_like(pos_change_arr)
+        if impact_coeff > 0:
+            vol = np.zeros_like(ret_arr)
+            window = 20
+            for i in range(window, len(ret_arr)):
+                vol[i] = np.std(ret_arr[i-window:i])
+            
+            for i in range(len(pos_change_arr)):
+                impact_costs[i] = pos_change_arr[i] * weight_arr[i] * lev * impact_coeff * vol[i]
+        
+        # Calculate strategy returns with dynamic weights
+        strat_ret_arr = (pos_arr * weight_arr * lev) * ret_arr - fees - spread_costs - slippage_costs - impact_costs + swap_impact
     
     # Calculate equity curve
     equity_arr = np.cumprod(1.0 + strat_ret_arr)
@@ -522,18 +637,19 @@ def backtest_signals(
         exits = (pos_change > 0) & (pos == 0)
         td_rows = []
         for i, ts in enumerate(px.index):
+            current_weight = weight_arr[i] if sizing_method != "fixed" else w
             if entries.iloc[i]:
                 td_rows.append({
                     "ts": ts,
                     "side": "BUY" if pos.iloc[i] > 0 else "SELL",
-                    "delta_units": float(pos_change.iloc[i] * w * lev),
+                    "delta_units": float(pos_change.iloc[i] * current_weight * lev),
                     "price": float(px.shift(1).iloc[i] if i > 0 else px.iloc[i]),
                 })
             elif exits.iloc[i]:
                 td_rows.append({
                     "ts": ts,
                     "side": "SELL" if pos.shift(1).iloc[i] > 0 else "BUY",
-                    "delta_units": float(pos_change.iloc[i] * w * lev),
+                    "delta_units": float(pos_change.iloc[i] * current_weight * lev),
                     "price": float(px.shift(1).iloc[i] if i > 0 else px.iloc[i]),
                 })
         trade_details = pd.DataFrame(td_rows)
