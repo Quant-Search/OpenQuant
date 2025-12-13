@@ -30,6 +30,9 @@ class WFOSpec:
     mc_n_simulations: int = 100  # Number of MC simulations (reduced from default for WFO)
     mc_block_size: int = 20  # Block size for path-dependent bootstrap
     mc_param_perturbation_pct: float = 0.1  # Parameter perturbation percentage
+    anchored: bool = False  # Use anchored walk-forward with expanding window
+    mc_param_noise: bool = False  # Apply Monte Carlo parameter perturbation to best params
+    sharpe_stability_check: bool = False  # Check Sharpe stability across folds
 
 
 def _split_windows(index: pd.DatetimeIndex, n_splits: int) -> List[Tuple[pd.Timestamp, pd.Timestamp]]:
@@ -45,6 +48,102 @@ def _split_windows(index: pd.DatetimeIndex, n_splits: int) -> List[Tuple[pd.Time
     return bounds
 
 
+def _split_windows_anchored(index: pd.DatetimeIndex, n_splits: int) -> List[Tuple[pd.Timestamp, pd.Timestamp]]:
+    """Generate anchored window boundaries with expanding training window.
+    
+    In anchored WFO, the training window starts from the beginning and expands
+    as we move forward, while the test window moves forward in time.
+    """
+    if len(index) < n_splits + 2:
+        return [(index.min(), index.max())]
+    
+    bounds: List[Tuple[pd.Timestamp, pd.Timestamp]] = []
+    anchor_start = index.min()
+    step = int(len(index) / (n_splits + 1))
+    
+    for i in range(n_splits):
+        # Window always starts from anchor_start (expanding train window)
+        start = anchor_start
+        end = index[(i + 1) * step]
+        bounds.append((start, end))
+    
+    return bounds
+
+
+def _perturb_params(params: Dict[str, Any], perturbation_pct: float = 0.1) -> Dict[str, Any]:
+    """Apply Monte Carlo parameter perturbation with ±perturbation_pct noise.
+    
+    Args:
+        params: Dictionary of parameters
+        perturbation_pct: Perturbation percentage (default 0.1 for ±10%)
+    
+    Returns:
+        Perturbed parameters dictionary
+    """
+    perturbed = {}
+    for key, value in params.items():
+        if isinstance(value, (int, float)):
+            # Apply random perturbation: value * (1 + uniform(-pct, +pct))
+            noise = np.random.uniform(-perturbation_pct, perturbation_pct)
+            new_value = value * (1.0 + noise)
+            
+            # Preserve int/float type
+            if isinstance(value, int):
+                perturbed[key] = int(round(new_value))
+            else:
+                perturbed[key] = float(new_value)
+        else:
+            # Keep non-numeric parameters unchanged
+            perturbed[key] = value
+    
+    return perturbed
+
+
+def _calculate_sharpe_stability(fold_sharpes: List[float]) -> Dict[str, float]:
+    """Calculate Sharpe stability metrics across folds.
+    
+    Args:
+        fold_sharpes: List of Sharpe ratios from each fold
+    
+    Returns:
+        Dictionary with stability metrics:
+        - mean: Mean Sharpe
+        - std: Standard deviation of Sharpe
+        - cv: Coefficient of variation (std/mean)
+        - min: Minimum Sharpe
+        - max: Maximum Sharpe
+        - stability_ratio: mean / std (higher is better)
+    """
+    if not fold_sharpes:
+        return {
+            "mean": 0.0,
+            "std": 0.0,
+            "cv": 0.0,
+            "min": 0.0,
+            "max": 0.0,
+            "stability_ratio": 0.0
+        }
+    
+    sharpes = np.array(fold_sharpes)
+    mean_sharpe = float(np.mean(sharpes))
+    std_sharpe = float(np.std(sharpes, ddof=1)) if len(sharpes) > 1 else 0.0
+    
+    # Coefficient of variation
+    cv = abs(std_sharpe / mean_sharpe) if abs(mean_sharpe) > 1e-6 else float('inf')
+    
+    # Stability ratio (inverse of CV, higher is better)
+    stability_ratio = abs(mean_sharpe / std_sharpe) if std_sharpe > 1e-6 else 0.0
+    
+    return {
+        "mean": mean_sharpe,
+        "std": std_sharpe,
+        "cv": cv,
+        "min": float(np.min(sharpes)),
+        "max": float(np.max(sharpes)),
+        "stability_ratio": stability_ratio
+    }
+
+
 def walk_forward_evaluate(
     df: pd.DataFrame,
     strategy_factory,
@@ -54,25 +153,46 @@ def walk_forward_evaluate(
     wfo: WFOSpec = WFOSpec(),
 ) -> Dict[str, Any]:
     """Run WFO evaluation with optional CPCV and Monte Carlo robustness testing.
-    Returns dict with keys: test_sharpes (list), mean_test_sharpe, best_params_per_split, 
-    and optionally monte_carlo_results
+    
+    Enhanced features:
+    - Anchored walk-forward: Expanding training window when wfo.anchored=True
+    - Monte Carlo parameter perturbation: Apply ±10% noise to best params when wfo.mc_param_noise=True
+    - Sharpe stability checks: Track out-of-sample Sharpe stability across folds
+    - Expanded results: Fold-level metrics including returns, equity, and per-fold Sharpe
+    
+    Returns dict with keys:
+        - test_sharpes: List of test Sharpe ratios per fold
+        - mean_test_sharpe: Mean test Sharpe
+        - best_params_per_split: List of best parameters per split
+        - fold_metrics: List of per-fold detailed metrics
+        - sharpe_stability: Sharpe stability metrics across folds
+        - monte_carlo_results: MC results (if wfo.use_monte_carlo=True)
+        - robustness_evaluation: Robustness evaluation (if wfo.use_monte_carlo=True)
     """
     # Use CPCV if enabled
     if wfo.use_cpcv:
         from ..validation.combinatorial_cv import CombinatorialPurgedCV
         return _walk_forward_cpcv(df, strategy_factory, param_grid, fee_bps, weight, wfo)
         
-    # Original WFO implementation
+    # Original WFO implementation with enhancements
     idx = df.index
-    splits = _split_windows(idx, wfo.n_splits)
+    
+    # Choose splitting strategy: anchored or rolling
+    if wfo.anchored:
+        splits = _split_windows_anchored(idx, wfo.n_splits)
+    else:
+        splits = _split_windows(idx, wfo.n_splits)
+    
     best_params: List[Dict[str, Any]] = []
     test_sharpes: List[float] = []
+    fold_metrics: List[Dict[str, Any]] = []
 
-    # Iterate through rolling windows
-    for (start, end) in splits:
+    # Iterate through windows
+    for fold_idx, (start, end) in enumerate(splits):
         df_win = df[(df.index >= start) & (df.index <= end)]
         if df_win.empty:
             continue
+        
         # Train/Test split within window
         n = len(df_win)
         cut = int(n * wfo.train_frac)
@@ -98,16 +218,49 @@ def walk_forward_evaluate(
                     best_p = params
             except Exception:
                 continue
+        
         if best_p is None:
             continue
+        
+        # Apply Monte Carlo parameter perturbation if enabled
+        if wfo.mc_param_noise:
+            test_params = _perturb_params(best_p, wfo.mc_param_perturbation_pct)
+        else:
+            test_params = best_p
+        
         best_params.append(best_p)
 
-        # Evaluate on test with best params
-        strat = strategy_factory(**best_p)
-        sig = strat.generate_signals(df_test)
-        res = backtest_signals(df_test, sig, fee_bps=fee_bps, weight=weight)
-        test_s = sharpe(res.returns, freq="1d")
-        test_sharpes.append(float(test_s))
+        # Evaluate on test with best params (potentially perturbed)
+        try:
+            strat = strategy_factory(**test_params)
+            sig = strat.generate_signals(df_test)
+            res = backtest_signals(df_test, sig, fee_bps=fee_bps, weight=weight)
+            test_s = sharpe(res.returns, freq="1d")
+            test_sharpes.append(float(test_s))
+            
+            # Collect detailed fold-level metrics
+            fold_metric = {
+                "fold": fold_idx,
+                "train_start": start,
+                "train_end": df_train.index[-1],
+                "test_start": df_test.index[0],
+                "test_end": end,
+                "train_size": len(df_train),
+                "test_size": len(df_test),
+                "best_params": best_p,
+                "test_params": test_params if wfo.mc_param_noise else best_p,
+                "train_sharpe": float(best_s),
+                "test_sharpe": float(test_s),
+                "test_mean_return": float(res.returns.mean()),
+                "test_std_return": float(res.returns.std()),
+                "test_total_return": float(res.equity_curve.iloc[-1] - 1.0),
+                "test_max_equity": float(res.equity_curve.max()),
+                "test_min_equity": float(res.equity_curve.min()),
+            }
+            fold_metrics.append(fold_metric)
+            
+        except Exception:
+            continue
 
     mean_test_sharpe = float(np.mean(test_sharpes)) if test_sharpes else 0.0
     
@@ -115,7 +268,13 @@ def walk_forward_evaluate(
         "test_sharpes": test_sharpes,
         "mean_test_sharpe": mean_test_sharpe,
         "best_params_per_split": best_params,
+        "fold_metrics": fold_metrics,
     }
+    
+    # Calculate Sharpe stability metrics if enabled
+    if wfo.sharpe_stability_check:
+        stability = _calculate_sharpe_stability(test_sharpes)
+        result["sharpe_stability"] = stability
     
     # Run Monte Carlo robustness testing if enabled
     if wfo.use_monte_carlo and best_params:
@@ -181,10 +340,11 @@ def _walk_forward_cpcv(
     
     test_sharpes: List[float] = []
     best_params: List[Dict[str, Any]] = []
+    fold_metrics: List[Dict[str, Any]] = []
     
     LOGGER.info("Running CPCV Walk-Forward Optimization...")
     
-    for train_idx, test_idx in cv.split(df):
+    for fold_idx, (train_idx, test_idx) in enumerate(cv.split(df)):
         if len(train_idx) < 20 or len(test_idx) < 5:
             continue
             
@@ -212,15 +372,46 @@ def _walk_forward_cpcv(
                 
         if best_p is None:
             continue
+        
+        # Apply Monte Carlo parameter perturbation if enabled
+        if wfo.mc_param_noise:
+            test_params = _perturb_params(best_p, wfo.mc_param_perturbation_pct)
+        else:
+            test_params = best_p
             
         best_params.append(best_p)
         
         # Evaluate on test
-        strat = strategy_factory(**best_p)
-        sig = strat.generate_signals(df_test)
-        res = backtest_signals(df_test, sig, fee_bps=fee_bps, weight=weight)
-        test_s = sharpe(res.returns, freq="1d")
-        test_sharpes.append(float(test_s))
+        try:
+            strat = strategy_factory(**test_params)
+            sig = strat.generate_signals(df_test)
+            res = backtest_signals(df_test, sig, fee_bps=fee_bps, weight=weight)
+            test_s = sharpe(res.returns, freq="1d")
+            test_sharpes.append(float(test_s))
+            
+            # Collect detailed fold-level metrics
+            fold_metric = {
+                "fold": fold_idx,
+                "train_start": df_train.index[0],
+                "train_end": df_train.index[-1],
+                "test_start": df_test.index[0],
+                "test_end": df_test.index[-1],
+                "train_size": len(df_train),
+                "test_size": len(df_test),
+                "best_params": best_p,
+                "test_params": test_params if wfo.mc_param_noise else best_p,
+                "train_sharpe": float(best_s),
+                "test_sharpe": float(test_s),
+                "test_mean_return": float(res.returns.mean()),
+                "test_std_return": float(res.returns.std()),
+                "test_total_return": float(res.equity_curve.iloc[-1] - 1.0),
+                "test_max_equity": float(res.equity_curve.max()),
+                "test_min_equity": float(res.equity_curve.min()),
+            }
+            fold_metrics.append(fold_metric)
+            
+        except Exception:
+            continue
         
     mean_test_sharpe = float(np.mean(test_sharpes)) if test_sharpes else 0.0
     
@@ -230,7 +421,13 @@ def _walk_forward_cpcv(
         "test_sharpes": test_sharpes,
         "mean_test_sharpe": mean_test_sharpe,
         "best_params_per_split": best_params,
+        "fold_metrics": fold_metrics,
     }
+    
+    # Calculate Sharpe stability metrics if enabled
+    if wfo.sharpe_stability_check:
+        stability = _calculate_sharpe_stability(test_sharpes)
+        result["sharpe_stability"] = stability
     
     # Run Monte Carlo robustness testing if enabled
     if wfo.use_monte_carlo and best_params:
