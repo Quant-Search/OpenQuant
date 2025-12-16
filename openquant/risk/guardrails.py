@@ -88,7 +88,8 @@ def apply_concentration_limits(
             m = r.get("metrics") or {}
             if not m.get("ok", False):
                 continue
-            sym = r.get("symbol"); strat = r.get("strategy")
+            sym = r.get("symbol")
+            strat = r.get("strategy")
             if isinstance(sym, str) and isinstance(strat, str):
                 by_pair.setdefault((sym, strat), []).append(i)
         for key, idxs in by_pair.items():
@@ -97,4 +98,3 @@ def apply_concentration_limits(
                 rows[i]["metrics"]["ok"] = False
 
     return rows
-
