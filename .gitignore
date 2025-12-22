@@ -27,3 +27,6 @@ data/*.duckdb
 # OS files
 .DS_Store
 Thumbs.db
+
+RESEARCH_LOG.md
+LINKEDIN_POST.Md
