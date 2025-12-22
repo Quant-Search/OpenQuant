@@ -52,6 +52,16 @@ import numpy as np
 # CONFIGURATION - Modify these values for your setup
 # =============================================================================
 
+def _safe_int(value: Optional[str]) -> Optional[int]:
+    """Convert string to int safely, return None on failure."""
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        return None
+
+
 class Config:
     """Robot configuration - all settings in one place."""
     
@@ -76,18 +86,7 @@ class Config:
     LOOP_INTERVAL_SECONDS: int = 3600  # Run every hour
     
     # MT5 credentials (from environment)
-    # Safe conversion: returns None if MT5_LOGIN is missing or not a valid integer
-    @staticmethod
-    def _safe_int(value: Optional[str]) -> Optional[int]:
-        """Convert string to int safely, return None on failure."""
-        if value is None:
-            return None
-        try:
-            return int(value)
-        except ValueError:
-            return None
-    
-    MT5_LOGIN: Optional[int] = _safe_int.__func__(os.getenv("MT5_LOGIN"))
+    MT5_LOGIN: Optional[int] = _safe_int(os.getenv("MT5_LOGIN"))
     MT5_PASSWORD: Optional[str] = os.getenv("MT5_PASSWORD")
     MT5_SERVER: Optional[str] = os.getenv("MT5_SERVER")
     MT5_TERMINAL_PATH: Optional[str] = os.getenv("MT5_TERMINAL_PATH")
@@ -159,9 +158,12 @@ class KalmanStrategy:
         """
         n = len(prices)
         
-        # Initialize state
-        x = prices[0]  # Initial estimate = first observation
-        P = 1.0        # Initial uncertainty
+        # Initialize state with high uncertainty to allow non-zero early deviations
+        # Use mean of first 10 prices as initial estimate (warm-up)
+        warmup = min(10, n)
+        x = np.mean(prices[:warmup])  # Initial estimate = mean of first 10 bars
+        P = np.var(prices[:warmup]) if warmup > 1 else 1.0  # Initial uncertainty = variance
+        P = max(P, 1e-6)  # Ensure non-zero uncertainty
         
         # Output arrays
         estimates = np.zeros(n)
@@ -180,7 +182,7 @@ class KalmanStrategy:
             
             # Store results
             estimates[i] = x
-            deviations[i] = z - x  # Innovation (deviation from estimate)
+            deviations[i] = z - x_pred  # Innovation = observation - prediction (before update)
             
         return estimates, deviations
     
@@ -205,7 +207,10 @@ class KalmanStrategy:
         
         # Calculate z-score of deviations
         dev_series = pd.Series(deviations, index=df.index)
-        rolling_std = dev_series.rolling(window=50).std().fillna(1.0)
+        rolling_std = dev_series.rolling(window=50).std()
+        # Replace NaN and zero values to avoid division errors
+        # Use 1.0 as fallback (results in z_score = deviation, conservative)
+        rolling_std = rolling_std.replace(0, np.nan).fillna(1.0)
         z_score = dev_series / rolling_std
         
         # Generate signals
@@ -408,6 +413,14 @@ class RiskManager:
         true_range = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
         atr = true_range.rolling(window=period).mean().iloc[-1]
         
+        # Handle NaN: return a safe fallback based on recent price range
+        if pd.isna(atr) or atr <= 0:
+            # Fallback: use simple high-low range of last bar
+            atr = float(df['High'].iloc[-1] - df['Low'].iloc[-1])
+            if atr <= 0:
+                # Ultimate fallback: 1% of current price
+                atr = float(df['Close'].iloc[-1]) * 0.01
+        
         return float(atr)
     
     @staticmethod
@@ -488,7 +501,8 @@ class Trader:
         self.mode = mode
         self._mt5 = None
         self._paper_positions: Dict[str, Dict] = {}
-        self._paper_equity = 10000.0  # Starting paper equity
+        self._paper_cash = 10000.0  # Starting paper cash
+        self._paper_pnl = 0.0  # Realized P&L from closed trades
         
     def _get_mt5(self):
         """Get MT5 module (lazy init)."""
@@ -504,10 +518,41 @@ class Trader:
             pass
         return None
     
+    def _get_paper_price(self, symbol: str) -> float:
+        """Get simulated price for paper trading."""
+        # If we have a stored current price, use it
+        if symbol in self._paper_positions:
+            return self._paper_positions[symbol].get("current_price", 1.0)
+        # Default prices for common forex pairs (rough estimates)
+        defaults = {
+            "EURUSD": 1.10, "GBPUSD": 1.27, "USDJPY": 150.0,
+            "USDCHF": 0.88, "AUDUSD": 0.67, "USDCAD": 1.35
+        }
+        return defaults.get(symbol, 1.0)
+    
+    def update_paper_prices(self, prices: Dict[str, float]):
+        """Update current prices for paper positions (call after fetching data)."""
+        for symbol, price in prices.items():
+            if symbol in self._paper_positions:
+                self._paper_positions[symbol]["current_price"] = price
+    
     def get_equity(self) -> float:
-        """Get account equity."""
+        """Get account equity (cash + unrealized P&L)."""
         if self.mode == "paper":
-            return self._paper_equity
+            # Calculate unrealized P&L from open positions
+            unrealized_pnl = 0.0
+            for symbol, pos in self._paper_positions.items():
+                entry_price = pos.get("entry_price", 0)
+                current_price = pos.get("current_price", entry_price)
+                volume = pos.get("volume", 0)
+                # P&L = (current - entry) * volume * contract_size
+                # For forex, 1 lot = 100,000 units
+                contract_size = 100000.0
+                if volume > 0:  # LONG
+                    unrealized_pnl += (current_price - entry_price) * abs(volume) * contract_size
+                else:  # SHORT
+                    unrealized_pnl += (entry_price - current_price) * abs(volume) * contract_size
+            return self._paper_cash + self._paper_pnl + unrealized_pnl
             
         mt5 = self._get_mt5()
         if mt5:
@@ -559,14 +604,37 @@ class Trader:
         print(f"[ORDER] {side} {volume:.2f} {symbol} SL={stop_loss} TP={take_profit}")
         
         if self.mode == "paper":
-            # Simulate paper trade
+            # Get simulated entry price (use last known price or estimate)
+            # In real usage, this would come from the data fetcher
+            entry_price = self._get_paper_price(symbol)
+            
+            # If we have an existing position, close it first (realize P&L)
+            if symbol in self._paper_positions:
+                old_pos = self._paper_positions[symbol]
+                old_volume = old_pos.get("volume", 0)
+                old_entry = old_pos.get("entry_price", entry_price)
+                contract_size = 100000.0
+                
+                # Calculate realized P&L from closing old position
+                if old_volume > 0:  # Was LONG
+                    realized = (entry_price - old_entry) * abs(old_volume) * contract_size
+                else:  # Was SHORT
+                    realized = (old_entry - entry_price) * abs(old_volume) * contract_size
+                
+                self._paper_pnl += realized
+                print(f"[PAPER] Closed {symbol} position, realized P&L: ${realized:.2f}")
+            
+            # Open new position
             self._paper_positions[symbol] = {
                 "volume": volume if side == "BUY" else -volume,
                 "side": side,
+                "entry_price": entry_price,
+                "current_price": entry_price,  # Will be updated on next cycle
                 "sl": stop_loss,
                 "tp": take_profit,
                 "entry_time": datetime.now(timezone.utc)
             }
+            print(f"[PAPER] Opened {side} {volume:.2f} {symbol} @ {entry_price:.5f}")
             return True
             
         # Live MT5 trade
@@ -661,13 +729,15 @@ class Robot:
         
         equity = self.trader.get_equity()
         current_positions = self.trader.get_positions()
-        print(f"[INFO] Equity: ${equity:.2f}, Positions: {len(current_positions)}")
+        # Track position count locally to update after each trade
+        position_count = len(current_positions)
+        print(f"[INFO] Equity: ${equity:.2f}, Positions: {position_count}")
         
         for symbol in Config.SYMBOLS:
             print(f"\n--- {symbol} ---")
             
-            # Skip if max positions reached
-            if len(current_positions) >= Config.MAX_POSITIONS:
+            # Skip if max positions reached (use local count for accuracy)
+            if position_count >= Config.MAX_POSITIONS:
                 if symbol not in current_positions:
                     print(f"[SKIP] Max positions ({Config.MAX_POSITIONS}) reached")
                     continue
@@ -681,7 +751,17 @@ class Robot:
             # Get current price and ATR
             current_price = float(df['Close'].iloc[-1])
             atr = RiskManager.calculate_atr(df)
+            
+            # Validate ATR before proceeding
+            if pd.isna(atr) or atr <= 0:
+                print(f"[WARN] Invalid ATR for {symbol}, skipping")
+                continue
+                
             print(f"[DATA] Price: {current_price:.5f}, ATR: {atr:.5f}")
+            
+            # Update paper trading prices for accurate equity calculation
+            if self.mode == "paper":
+                self.trader.update_paper_prices({symbol: current_price})
             
             # Generate signal
             signals = self.strategy.generate_signals(df)
@@ -709,7 +789,12 @@ class Robot:
                 volume = position_size / 100000.0
                 volume = max(0.01, round(volume, 2))
                 
-                self.trader.place_order(symbol, side, volume, sl, tp)
+                if self.trader.place_order(symbol, side, volume, sl, tp):
+                    # Only increment count if this is a NEW position (not a flip)
+                    is_new_position = symbol not in current_positions or current_pos == 0
+                    current_positions[symbol] = volume
+                    if is_new_position:
+                        position_count += 1
                 
             elif latest_signal == -1 and current_pos >= 0:
                 # Go SHORT
@@ -725,7 +810,12 @@ class Robot:
                 volume = position_size / 100000.0
                 volume = max(0.01, round(volume, 2))
                 
-                self.trader.place_order(symbol, side, volume, sl, tp)
+                if self.trader.place_order(symbol, side, volume, sl, tp):
+                    # Only increment count if this is a NEW position (not a flip)
+                    is_new_position = symbol not in current_positions or current_pos == 0
+                    current_positions[symbol] = -volume
+                    if is_new_position:
+                        position_count += 1
                 
             else:
                 print(f"[HOLD] No action needed")
@@ -752,9 +842,11 @@ class Robot:
             
             # Calculate returns
             returns = df['Close'].pct_change().fillna(0)
-            strategy_returns = signals.shift(1) * returns  # Signal from previous bar
+            # Shift signals and fill NaN to avoid propagation in calculations
+            strategy_returns = signals.shift(1).fillna(0) * returns
             
-            # Metrics
+            # Metrics (ensure no NaN values)
+            strategy_returns = strategy_returns.fillna(0)
             total_return = (1 + strategy_returns).prod() - 1
             sharpe = (strategy_returns.mean() / strategy_returns.std()) * np.sqrt(252) if strategy_returns.std() > 0 else 0
             max_dd = (strategy_returns.cumsum() - strategy_returns.cumsum().cummax()).min()

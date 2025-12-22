@@ -28,7 +28,6 @@ data/*.duckdb
 .DS_Store
 Thumbs.db
 
-RESEARCH_LOG.md
-LINKEDIN_POST.Md
-
-g.mdc
+# Personal files (optional - remove if you want to share these)
+# RESEARCH_LOG.md
+# LINKEDIN_POST.md

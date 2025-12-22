@@ -1,0 +1,6 @@
+---
+alwaysApply: true
+---
+
+- follow principles of SOLID, SRP, DRY, KISS, Agile, Duck Typing and Clean Code
+- Modularize to the extreme possible the code
