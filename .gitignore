@@ -264,8 +264,8 @@ data/test_paper_state.json
 dashboard.log
 
 # OpenQuant - Data and logs
-data/
-logs/
+/data/
+/logs/
 
 # OpenQuant - Strategy comparison reports
 reports/strategy_comparison/

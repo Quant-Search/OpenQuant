@@ -1,8 +1,0 @@
-{
-  "strategy": "mean_reversion",
-  "total_return": 0.3755427810629047,
-  "n_trades": 296,
-  "win_rate": 0.30405405405405406,
-  "profit_factor": 1.0174375147324377,
-  "timestamp": "2025-12-06T13:00:10.464574"
-}

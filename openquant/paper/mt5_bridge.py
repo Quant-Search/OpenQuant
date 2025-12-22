@@ -264,6 +264,11 @@ def apply_allocation_to_mt5(
         delta = tgt - cur
         if abs(delta) < 1e-9:
             continue
+        # Get current market price for order
+        tick = mt5.symbol_info_tick(sym)
+        if not tick:
+            continue
+        expected_price = float(tick.ask if delta > 0 else tick.bid)
         req = {
             "action": mt5.TRADE_ACTION_DEAL,
             "symbol": sym,
@@ -454,51 +459,6 @@ def export_signals_to_csv(allocations: List[Dict[str, Any]], path: str = "data/s
             # print(f"Exported signals to MT5: {target_file}")
         except Exception as e:
             print(f"Failed to write MT5 signals CSV: {e}")
-
-
-def close_all_positions() -> int:
-    """Emergency: Close ALL open positions immediately.
-    Returns number of closed positions.
-    """
-    mt5 = _lazy_import()
-    if not mt5:
-        return 0
-        
-    count = 0
-    try:
-        positions = mt5.positions_get()
-        if not positions:
-            return 0
-            
-        for pos in positions:
-            tick = mt5.symbol_info_tick(pos.symbol)
-            if not tick:
-                continue
-                
-            # Close logic: Send opposite order
-            type_op = mt5.ORDER_TYPE_SELL if pos.type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY
-            price = tick.bid if type_op == mt5.ORDER_TYPE_SELL else tick.ask
-            
-            req = {
-                "action": mt5.TRADE_ACTION_DEAL,
-                "symbol": pos.symbol,
-                "volume": pos.volume,
-                "type": type_op,
-                "position": pos.ticket,
-                "price": price,
-                "deviation": 20,
-                "magic": 987654321,
-                "comment": "Emergency Close",
-            }
-            
-            res = mt5.order_send(req)
-            if res and res.retcode == mt5.TRADE_RETCODE_DONE:
-                count += 1
-                
-    except Exception:
-        pass
-        
-    return count
 
 
 def close_all_positions() -> int:

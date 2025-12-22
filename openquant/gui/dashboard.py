@@ -98,17 +98,17 @@ def view_dashboard(con):
         sort_cols = [c for c in ["wfo_mts", "dsr", "sharpe", "sortino", "alpha_sharpe"] if c in q.columns]
         q = q.sort_values(sort_cols, ascending=[False] * len(sort_cols))
         cols_to_show = [c for c in ["exchange","symbol","timeframe","strategy","sharpe","sortino","alpha_sharpe","bench_sharpe","win_rate","profit_factor","p_value","bull_sharpe","bear_sharpe","volatile_sharpe","calm_sharpe","mc_sharpe_p05","mc_sharpe_p95","mc_dd_p95","dsr","max_dd","cvar","n_trades","bars","wfo_mts","ok"] if c in q.columns]
-        st.dataframe(q.head(50)[cols_to_show], width='stretch')
+        st.dataframe(q.head(50)[cols_to_show], use_container_width=True)
         
         # Charts
         c1, c2 = st.columns(2)
         with c1:
             fig = px.histogram(q, x="sharpe", nbins=20, title="Sharpe Distribution")
-            st.plotly_chart(fig, width='stretch')
+            st.plotly_chart(fig, use_container_width=True)
         with c2:
             if "max_dd" in q.columns:
                 fig2 = px.scatter(q, x="max_dd", y="sortino" if "sortino" in q.columns else "sharpe", color="symbol", title="Risk vs Reward")
-                st.plotly_chart(fig2, width='stretch')
+                st.plotly_chart(fig2, use_container_width=True)
 
         st.divider()
         st.subheader("📐 Regime Comparison")
@@ -175,7 +175,7 @@ def view_dashboard(con):
         pos = _query(con, "SELECT * FROM portfolio_positions WHERE ts=(SELECT MAX(ts) FROM portfolio_positions) ORDER BY symbol")
         if not pos.empty:
             st.caption("Current Positions")
-            st.dataframe(pos, width='stretch')
+            st.dataframe(pos, use_container_width=True)
     except Exception:
         st.caption("No portfolio history yet.")
 
@@ -716,7 +716,7 @@ def view_charting(con):
                 
                 # 4. Plot
                 fig = create_interactive_chart(df, symbol=symbol, indicators=indicators, trades=trades)
-                st.plotly_chart(fig, width='stretch')
+                st.plotly_chart(fig, use_container_width=True)
                 
             except Exception as e:
                 st.error(f"Error loading chart: {e}")
@@ -888,11 +888,11 @@ def view_ai_analytics():
                     
                     # Fitness Distribution
                     fig = px.histogram(df_pop, x="fitness", nbins=20, title="Population Fitness Distribution")
-                    st.plotly_chart(fig, width='stretch')
+                    st.plotly_chart(fig, use_container_width=True)
                     
                     # Top Genomes
                     st.caption("Top Performing Genomes")
-                    st.dataframe(df_pop.sort_values("fitness", ascending=False).head(10), width='stretch')
+                    st.dataframe(df_pop.sort_values("fitness", ascending=False).head(10), use_container_width=True)
                     
                     # Scatter Params (if available)
                     if "params" in df_pop.columns:
@@ -920,7 +920,7 @@ def view_ai_analytics():
                     df_imp = df_imp.sort_values("Importance", ascending=True)
                     
                     fig = px.bar(df_imp, x="Importance", y="Feature", orientation='h', title="Feature Importance")
-                    st.plotly_chart(fig, width='stretch')
+                    st.plotly_chart(fig, use_container_width=True)
                 else:
                     st.info("No feature importance data available.")
                     

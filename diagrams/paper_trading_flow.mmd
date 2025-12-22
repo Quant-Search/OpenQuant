@@ -1,8 +1,0 @@
-flowchart TD
-  A[Allocation JSON] --> T[Targets (key, weight)]
-  P[PortfolioState] --> U[Compute target units]
-  M[MarketSnapshot] --> U
-  U --> R[Rebalance to targets]
-  R --> H[Update holdings]
-  H --> E[Equity recompute]
-

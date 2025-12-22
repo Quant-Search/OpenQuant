@@ -1,90 +1,132 @@
-# OpenQuant
+# OpenQuant MVP
 
-## Abstract
+## What is this?
 
-OpenQuant is an open-source quantitative trading laboratory designed for rigorous financial research, backtesting, and execution. It prioritizes mathematical correctness, reproducibility, and modular architecture. The system integrates advanced time-series analysis, statistical arbitrage models, and genetic optimization algorithms to identify and exploit market inefficiencies.
+A simple, working trading robot that:
+1. Connects to MetaTrader 5 (or runs in paper mode)
+2. Fetches price data for configured symbols
+3. Generates trading signals using Kalman Filter Mean Reversion
+4. Executes trades with basic risk management (position sizing, stop loss)
 
-## Key Features
+## Quick Start
 
-*   **Multi-Broker Support**:
-    *   **Paper Trading**: Robust simulation with order management, slippage/fee modeling, and portfolio tracking.
-    *   **Alpaca**: Native integration for Linux/Cloud environments (Live & Paper).
-    *   **MetaTrader 5**: Full broker integration for Forex/CFD trading on Windows via `MT5Broker` class.
-*   **Quantitative Core**:
-    *   **Stationarity**: ADF, KPSS tests.
-    *   **Regime Classification**: Hurst Exponent, Trend/Mean-Reversion scoring.
-    *   **Filtering**: Kalman Filters, Hodrick-Prescott.
-    *   **Volatility**: GARCH, Garman-Klass.
-*   **Advanced Strategies**:
-    *   **Ensembling**: Combine multiple strategies via Voting or Weighted Average (`StrategyMixer`).
-    *   **Genetic Optimization**: Evolve strategy parameters using evolutionary algorithms.
-*   **Operational Robustness**:
-    *   **Risk Management**: Stop-Loss, Take-Profit, Daily Loss Limits.
-    *   **Scheduling**: Trading windows and day restrictions.
-    *   **Alerting**: WhatsApp/Webhook notifications for critical events.
+### 1. Install Dependencies
 
-## Architecture
-
-*   **`openquant.quant`**: Mathematical primitives and statistical tests.
-*   **`openquant.research`**: Hypothesis testing engine for large universes.
-*   **`openquant.strategies`**: Strategy implementations and the `StrategyMixer` ensemble engine.
-*   **`openquant.paper`**: Paper trading simulator and state management.
-*   **`openquant.broker`**: Broker adapters (Alpaca, MT5).
-
-## Installation
-
-### Prerequisites
-*   Python 3.10+
-*   Linux (Recommended) or Windows
-
-### Setup
-
-1.  **Environment Initialization**:
-    ```bash
-    python3 -m venv .venv
-    source .venv/bin/activate
-    pip install -r requirements.txt
-    ```
-
-2.  **Configuration**:
-    Copy the example configuration and set your credentials (Alpaca/MT5).
-    ```bash
-    cp .env.example .env
-    ```
-
-## Usage
-
-### Paper Trading (Linux/Safe Mode)
-Run the paper trading simulation with the latest allocation:
 ```bash
-./run_paper.sh
+# Create virtual environment
+python -m venv .venv
+
+# Activate (Windows)
+.venv\Scripts\activate
+
+# Activate (Linux/Mac)
+source .venv/bin/activate
+
+# Install packages
+pip install -r requirements.txt
 ```
 
-### Research & Backtesting
-Run a research cycle on a specific asset:
-```bash
-python3 scripts/run_robot_cli.py --symbols BTC/USD --strategy stat_arb
+### 2. Configure (for live trading)
+
+Create a `.env` file with your MT5 credentials:
+
+```env
+MT5_LOGIN=12345678
+MT5_PASSWORD=your_password_here
+MT5_SERVER=YourBroker-Server
+MT5_TERMINAL_PATH=C:/Program Files/MetaTrader 5/terminal64.exe
 ```
 
-### Strategy Ensembling
-Combine strategies using the `StrategyMixer` in your research config:
+### 3. Run
+
+```bash
+# Paper trading (simulated, no real money)
+python mvp_robot.py --mode paper
+
+# Backtest the strategy on historical data
+python mvp_robot.py --mode backtest
+
+# Live trading (requires MT5 credentials)
+python mvp_robot.py --mode live
+
+# Or use the batch file on Windows
+run_robot.bat          # Paper mode (default)
+run_robot.bat live     # Live mode
+run_robot.bat backtest # Backtest mode
+```
+
+## Configuration
+
+Edit the `Config` class in `mvp_robot.py`:
+
 ```python
-# Example config snippet
-strategy="mixer",
-params={
-    "sub_strategies": ["kalman", "hurst"],
-    "weights": [0.6, 0.4]
-}
+class Config:
+    # Trading symbols (MT5 format)
+    SYMBOLS: List[str] = ["EURUSD", "GBPUSD", "USDJPY"]
+    
+    # Timeframe for analysis
+    TIMEFRAME: str = "1h"
+    
+    # Strategy parameters (Kalman Filter)
+    PROCESS_NOISE: float = 1e-5       # How much true price varies
+    MEASUREMENT_NOISE: float = 1e-3   # How noisy are observations
+    SIGNAL_THRESHOLD: float = 1.5     # Z-score threshold for signals
+    
+    # Risk management
+    RISK_PER_TRADE: float = 0.02      # Risk 2% of equity per trade
+    MAX_POSITIONS: int = 3            # Maximum concurrent positions
+    STOP_LOSS_ATR_MULT: float = 2.0   # Stop loss = 2x ATR
+    TAKE_PROFIT_ATR_MULT: float = 3.0 # Take profit = 3x ATR
 ```
 
-### Notifications
-Test WhatsApp notifications:
-```bash
-python3 scripts/test_whatsapp.py --url "YOUR_WEBHOOK_URL"
+## How the Strategy Works
+
+The robot uses a **Kalman Filter Mean Reversion** strategy:
+
+1. **Kalman Filter** estimates the "true" price from noisy market data
+2. **Deviation** is calculated: observed price - estimated price
+3. **Z-score** normalizes the deviation using rolling standard deviation
+4. **Signals**:
+   - LONG when z-score < -threshold (price below fair value)
+   - SHORT when z-score > threshold (price above fair value)
+
+### Mathematical Model
+
+```
+State equation:     x(t+1) = x(t) + w(t),  where w(t) ~ N(0, Q)
+Observation:        z(t) = x(t) + v(t),    where v(t) ~ N(0, R)
+
+Kalman Update:
+  Predict: x_pred = x_prev, P_pred = P_prev + Q
+  Update:  K = P_pred / (P_pred + R)
+           x = x_pred + K * (z - x_pred)
+           P = (1 - K) * P_pred
 ```
 
-## Deployment
-For cloud deployment, refer to `CLOUD_DEPLOY.md`.
+## Risk Management
 
-## Security & Policies
-Refer to `SECURITY.md` and `POLICIES.md`.
+- **Position Sizing**: Risk X% of equity per trade (default: 2%)
+- **Stop Loss**: ATR-based (default: 2x ATR from entry)
+- **Take Profit**: ATR-based (default: 3x ATR from entry)
+- **Max Positions**: Limit concurrent positions (default: 3)
+
+## Project Structure
+
+```
+OpenQuant/
+  mvp_robot.py       # <-- Main MVP robot (start here!)
+  run_robot.bat      # Windows launcher
+  requirements.txt   # Python dependencies
+  .env               # Your credentials (create this)
+  openquant/         # Library code (optional, for advanced use)
+```
+
+## Requirements
+
+- Python 3.10+
+- Windows (for MT5) or any OS for paper/backtest mode
+- MetaTrader 5 terminal (for live trading)
+
+## License
+
+MIT

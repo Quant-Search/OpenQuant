@@ -1,26 +1,33 @@
-pandas
-numpy
-pyyaml
-python-dotenv
-pytest
-# Optional extras used by the project; install as needed
-yfinance
-ccxt
-matplotlib
-duckdb
-optuna
-streamlit
-pyinstaller
-plotly
-pandas_ta  # Note: Not compatible with Python 3.14+ (requires numba which only supports Python <3.14)
-psutil
-statsmodels
-arch
-filterpy
-scipy
-hurst
-alpaca-py
-scikit-learn
-numba
-dask[dataframe]
-redis
+# OpenQuant MVP - Core Dependencies
+# ==================================
+
+# Data handling
+pandas>=2.0.0
+numpy>=1.24.0
+
+# Configuration
+python-dotenv>=1.0.0
+
+# Market data (fallback when MT5 not available)
+yfinance>=0.2.0
+
+# Testing
+pytest>=7.0.0
+
+# ==================================
+# Optional - Only needed for advanced features
+# ==================================
+
+# MetaTrader 5 (Windows only, for live trading)
+# MetaTrader5>=5.0.0
+
+# Crypto data via CCXT
+# ccxt>=4.0.0
+
+# Dashboard (if using scripts/run_dashboard.py)
+# streamlit>=1.0.0
+# plotly>=5.0.0
+
+# Advanced statistics (for research module)
+# statsmodels>=0.14.0
+# scipy>=1.10.0
