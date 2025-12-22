@@ -76,7 +76,18 @@ class Config:
     LOOP_INTERVAL_SECONDS: int = 3600  # Run every hour
     
     # MT5 credentials (from environment)
-    MT5_LOGIN: Optional[int] = int(os.getenv("MT5_LOGIN")) if os.getenv("MT5_LOGIN") else None
+    # Safe conversion: returns None if MT5_LOGIN is missing or not a valid integer
+    @staticmethod
+    def _safe_int(value: Optional[str]) -> Optional[int]:
+        """Convert string to int safely, return None on failure."""
+        if value is None:
+            return None
+        try:
+            return int(value)
+        except ValueError:
+            return None
+    
+    MT5_LOGIN: Optional[int] = _safe_int.__func__(os.getenv("MT5_LOGIN"))
     MT5_PASSWORD: Optional[str] = os.getenv("MT5_PASSWORD")
     MT5_SERVER: Optional[str] = os.getenv("MT5_SERVER")
     MT5_TERMINAL_PATH: Optional[str] = os.getenv("MT5_TERMINAL_PATH")
@@ -251,7 +262,12 @@ class DataFetcher:
                 
             self._mt5 = mt5
             self._mt5_initialized = True
-            print(f"[INFO] MT5 connected: Account {mt5.account_info().login}")
+            # Safe access: check if account_info() returns valid object
+            account = mt5.account_info()
+            if account:
+                print(f"[INFO] MT5 connected: Account {account.login}")
+            else:
+                print("[INFO] MT5 connected (account info unavailable)")
             return True
             
         except ImportError:
