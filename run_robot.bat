@@ -22,7 +22,7 @@ IF EXIST .venv\Scripts\activate.bat (
     call .venv\Scripts\activate.bat
 )
 
-REM Run the MVP robot
-python mvp_robot.py --mode %MODE%
+REM Run the modular robot
+python main.py --mode %MODE%
 
 pause

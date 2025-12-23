@@ -41,13 +41,13 @@ MT5_TERMINAL_PATH=C:/Program Files/MetaTrader 5/terminal64.exe
 
 ```bash
 # Paper trading (simulated, no real money)
-python mvp_robot.py --mode paper
+python main.py --mode paper
 
 # Backtest the strategy on historical data
-python mvp_robot.py --mode backtest
+python main.py --mode backtest
 
 # Live trading (requires MT5 credentials)
-python mvp_robot.py --mode live
+python main.py --mode live
 
 # Or use the batch file on Windows
 run_robot.bat          # Paper mode (default)
@@ -114,12 +114,21 @@ Kalman Update:
 
 ```
 OpenQuant/
-  mvp_robot.py       # <-- Main MVP robot (start here!)
+  main.py            # Entry point (start here!)
+  robot/             # Modular robot package
+    config.py        # Configuration
+    strategy.py      # Strategy interface + Kalman implementation
+    data_fetcher.py  # Data fetching (MT5/yfinance)
+    risk_manager.py  # Risk calculations (ATR, position sizing)
+    trader.py        # Trade execution (paper/live)
+    robot.py         # Main orchestrator
   run_robot.bat      # Windows launcher
   requirements.txt   # Python dependencies
   .env               # Your credentials (create this)
-  openquant/         # Library code (optional, for advanced use)
+  ARCHITECTURE.md    # Design documentation
 ```
+
+**Modular Design**: Follows SOLID principles - each module has a single responsibility.
 
 ## Requirements
 
