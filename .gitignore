@@ -22,7 +22,12 @@ __pycache__/
 data/*.json
 data/*.db
 data/*.duckdb
+data/*.csv
+data/*.xlsx
+data/*.parquet
 *.log
+logs/
+*.log.*
 
 # OS files
 .DS_Store
@@ -30,4 +35,56 @@ Thumbs.db
 
 # Personal files (optional - remove if you want to share these)
 # RESEARCH_LOG.md
-# LINKEDIN_POST.md
+LINKEDIN_POST*.md
+QUANT_WORKFLOWS.md
+PLANS/
+
+# Backtest results and analysis
+data/backtest_*.csv
+data/grid_search_*.csv
+data/walkforward_*.json
+data/threshold_test_*.csv
+data/*_results.csv
+data/*_analysis.png
+data/*_report.md
+
+# Trading state and positions
+data/positions.json
+data/trades.json
+data/paper_trading_*.json
+data/equity_curve.csv
+
+# Jupyter Notebooks
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# Python
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# MyPy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Profiling
+*.prof
+*.lprof
+
+# Trading-specific
+*.mt5
+*.mt4
+trading_logs/
+paper_trading_logs/
