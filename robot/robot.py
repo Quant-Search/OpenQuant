@@ -12,11 +12,11 @@ from typing import Dict
 import pandas as pd
 import numpy as np
 
-from robot.config import Config
-from robot.strategy import BaseStrategy, KalmanStrategy
-from robot.data_fetcher import DataFetcher
-from robot.risk_manager import RiskManager
-from robot.trader import Trader
+from .config import Config
+from .strategy import BaseStrategy, KalmanStrategy
+from .data_fetcher import DataFetcher
+from .risk_manager import RiskManager
+from .trader import Trader
 
 
 class Robot:

@@ -1,0 +1,13 @@
+{
+  "symbol": "EURUSD",
+  "timeframe": "H1",
+  "best_params": {
+    "threshold": 2.5,
+    "process_noise": 0.01,
+    "measurement_noise": 0.5
+  },
+  "in_sample_period": "2025-08-29 to 2025-11-20",
+  "out_of_sample_period": "2025-11-20 to 2025-12-26",
+  "total_combinations": 125,
+  "profitable_combinations": 0
+}
